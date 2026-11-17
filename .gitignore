@@ -1,0 +1,40 @@
+# Segredos — NUNCA versionar. Repositório público.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dados coletados: posts contêm nomes e contatos de pessoas reais.
+# Nada disso entra no repositório (ver README "Privacidade").
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+data/
+dumps/
+posts/
+exports/
+# Nota: schema e migrações (.sql) SÃO versionados — só dumps é que não.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Ferramentas
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editores e sistema operacional
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
