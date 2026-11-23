@@ -73,7 +73,39 @@ Toda semana, os acertos e erros acumulados são multiplicados por `DECAY = 0.9` 
 - **Candidatas:** criadas pelo agente semanal; entra no máximo 1 nova por semana, ocupando a vaga de uma aposentada.
 - Toda receita guarda `parent_id` (de qual receita derivou) e `created_by` (`legacy`, `agent`, `manual`).
 
-## 4. Triagem (limpar o lixo)
+## 4. Semana sem feedback
+
+O sistema precisa continuar funcionando quando eu não respondo. A regra é: **semana sem feedback = semana congelada.** A coleta continua; o aprendizado pausa.
+
+**Definição:** uma semana é "sem feedback" quando não há nenhuma resposta minha (✓/✗ em post aprovado ou em post de auditoria) entre o domingo anterior e o domingo atual.
+
+### O que muda numa semana sem feedback
+
+| Peça | Comportamento |
+|---|---|
+| Coleta diária | Continua normal, usando o último estado das receitas e das regras |
+| Placar das receitas | **Não é atualizado.** Os descartes da semana ficam registrados no banco, mas não contam como erro |
+| Esquecimento (`DECAY`) | **Não é aplicado.** Sem dado novo, esquecer só destruiria conhecimento |
+| Aposentadoria de receitas | Não roda |
+| Agente semanal | Não chama o LLM nem propõe ajustes. Envia só um resumo: "Sem feedback esta semana, nada mudou." |
+
+**Por quê:** pelas regras de contagem (seção 3), descarte conta como erro e aprovado sem resposta não conta nada. Sem feedback, as receitas só acumulariam erros e todas piorariam artificialmente. E o esquecimento apagaria o passado sem nada novo no lugar.
+
+### Ausências longas
+
+| Semanas seguidas sem feedback | Ação |
+|---|---|
+| 2 | O bot envia um lembrete no Telegram |
+| 4 | `DAILY_RESULT_BUDGET` cai pela metade, para não gastar crédito do Apify sem ninguém olhando |
+| Primeira resposta após a ausência | Tudo volta ao normal na semana seguinte; nenhum estado é perdido |
+
+### Implementação
+
+- `core/bandit.py`: `update_scores` e `apply_decay` recebem a semana e não fazem nada se ela não tiver feedback. A regra vive no `core`, com testes.
+- `agent/graph.py`: depois de `aguardar_respostas`, uma aresta condicional pula direto para `enviar_resumo` quando não houver feedback.
+- Tabela `weeks` (ou equivalente) guarda `has_feedback` e o contador de semanas seguidas sem feedback.
+
+## 5. Triagem (limpar o lixo)
 
 Duas camadas, nessa ordem:
 
@@ -97,7 +129,7 @@ O prompt do juiz é montado a partir de:
 
 Os aprovados do dia são ordenados por `score` e enviados ao Telegram. Teto: `MAX_DAILY_NOTIFICATIONS = 3`.
 
-## 5. O agente semanal (LangGraph)
+## 6. O agente semanal (LangGraph)
 
 ```
 preparar_semana
@@ -144,7 +176,7 @@ O LLM **propõe**; o código **decide** se aplica:
 
 **Por que ajustes automáticos:** eu não aprovo antes; avalio o efeito na semana seguinte. O botão de desfazer é a rede de segurança.
 
-## 6. Orçamento
+## 7. Orçamento
 
 Apify, actor `scraper_one/facebook-posts-search`, plano Free: US$ 5/mês de crédito ≈ 1.000 posts. O crédito não acumula e, quando acaba, o Apify bloqueia (não cobra).
 
@@ -156,7 +188,7 @@ Apify, actor `scraper_one/facebook-posts-search`, plano Free: US$ 5/mês de cré
 
 O orçamento é uma **trava em código**. O agente decide como distribuir, nunca quanto gastar acima do teto.
 
-## 7. Telegram
+## 8. Telegram
 
 **Mensagem de post aprovado:**
 
@@ -174,7 +206,7 @@ Por que aprovei: truck, dentro da região, carga seca
 - **Recebimento:** sem servidor. A rotina de respostas usa `getUpdates` a cada 2h (o Telegram guarda atualizações por até 24h).
 - Melhoria futura: webhook num Cloudflare Worker, pra resposta instantânea.
 
-## 8. Arquitetura de código (arquitetura limpa)
+## 9. Arquitetura de código (arquitetura limpa)
 
 ```
 src/prospector/
@@ -205,7 +237,7 @@ src/prospector/
 
 **Modelos:** um modelo pequeno e barato para o juiz diário; um modelo maior para o agente semanal.
 
-## 9. Infraestrutura
+## 10. Infraestrutura
 
 | Peça | Escolha | Por quê |
 |---|---|---|
@@ -224,7 +256,7 @@ src/prospector/
 
 Cron do Actions é em UTC (BRT + 3h) e pode atrasar alguns minutos.
 
-## 10. Histórico do FacebookProspector
+## 11. Histórico do FacebookProspector
 
 O banco antigo (`prospector.db`, SQLite) tem o que precisamos:
 
@@ -244,7 +276,7 @@ O banco antigo (`prospector.db`, SQLite) tem o que precisamos:
 - O agente roda uma vez `analisar_motivos` sobre o histórico para gerar as **regras de triagem iniciais**.
 - Campos de autor (nome, perfil) não são importados: não são necessários para aprender.
 
-## 11. Fora do escopo (por enquanto)
+## 12. Fora do escopo (por enquanto)
 
 - RAG
 - Coletor de grupos (`apify/facebook-groups-scraper`)

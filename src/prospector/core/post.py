@@ -1,6 +1,6 @@
 """O post coletado e o veredito da triagem sobre ele.
 
-Ver `docs/arquitetura.md` seção 4.
+Ver `docs/arquitetura.md` seção 5.
 """
 
 from dataclasses import dataclass, field
