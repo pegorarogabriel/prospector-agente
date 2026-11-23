@@ -26,6 +26,7 @@ LONG_AGO = datetime(2026, 9, 10, 12, 0)  # naive, como o banco antigo gravava
 BASE = LegacyPost(
     legacy_id=1,
     text="Preciso de agregado truck baú, Guarulhos x Campinas",
+    image_url=None,
     url="https://facebook.com/posts/1",
     posted_at=LONG_AGO,
     collected_at=LONG_AGO,
@@ -151,10 +152,10 @@ def test_best_recipes_start_active_and_the_rest_candidate():
     queries = ["a", "b", "c", "d", "e"]
     posts = []
     for rank, query in enumerate(queries):
-        # "a" acerta 5 de 5, "b" 4 de 5, ... "e" 1 de 5.
-        for i in range(5):
-            action = "CHAMEI" if i < 5 - rank else "NAO_CHAMEI"
-            posts.append(legacy(rank * 10 + i, queries=frozenset({query}), user_action=action))
+        # 20 posts cada; "a" acerta 20, "b" 19, ... "e" 16.
+        for i in range(20):
+            action = "CHAMEI" if i < 20 - rank else "NAO_CHAMEI"
+            posts.append(legacy(rank * 100 + i, queries=frozenset({query}), user_action=action))
     _, repo = run(posts, max_active=4)
     status = {recipe.query: recipe.status for recipe in repo.list_recipes()}
     assert status == {
@@ -164,6 +165,25 @@ def test_best_recipes_start_active_and_the_rest_candidate():
         "d": RecipeStatus.ACTIVE,
         "e": RecipeStatus.CANDIDATE,
     }
+
+
+def test_small_samples_do_not_take_active_slots():
+    """Uma busca testada uma vez, sem evidência, não tira a vaga de uma comprovada."""
+    posts = [legacy(i, queries=frozenset({"tested once"}), status="FILTERED") for i in range(3)]
+    posts += [
+        legacy(100 + i, queries=frozenset({"proven"}), user_action="CHAMEI" if i < 5 else None)
+        for i in range(5)
+    ]
+    posts += [legacy(200 + i, queries=frozenset({"proven"}), status="FILTERED") for i in range(25)]
+    _, repo = run(posts, max_active=1)
+    status = {recipe.query: recipe.status for recipe in repo.list_recipes()}
+    assert status == {"proven": RecipeStatus.ACTIVE, "tested once": RecipeStatus.CANDIDATE}
+
+
+def test_small_samples_fill_slots_when_nothing_else_is_left():
+    _, repo = run([legacy(1, queries=frozenset({"only one"}), status="FILTERED")])
+    [recipe] = repo.list_recipes()
+    assert recipe.status is RecipeStatus.ACTIVE
 
 
 # --- tradução dos posts ---------------------------------------------------------
@@ -184,11 +204,83 @@ def test_post_without_date_uses_collection_time():
     assert post.posted_at == collected.replace(tzinfo=UTC)
 
 
-def test_posts_without_text_are_skipped():
+def test_posts_without_text_or_image_are_skipped():
     report, repo = run([legacy(1, text=None), legacy(2, text="   "), legacy(3)])
     assert report.posts_read == 3
-    assert report.posts_without_text == 2
+    assert report.posts_without_content == 2
     assert [post.id for post in repo.list_posts()] == ["legacy-3"]
+
+
+def test_image_only_post_is_imported_and_scored():
+    """Muita oportunidade vem só como imagem: ela conta como qualquer post."""
+    report, repo = run(
+        [legacy(1, text=None, image_url="https://fbcdn.net/flyer.jpg", user_action="CHAMEI")]
+    )
+    [post] = repo.list_posts()
+    assert post.text == ""
+    assert post.image_url == "https://fbcdn.net/flyer.jpg"
+    assert post.has_content
+    assert report.tallies["legacy-agregado-truck"] == RecipeTally(successes=1)
+
+
+# --- corte na última resposta -----------------------------------------------------
+
+
+def test_cutoff_defaults_to_my_last_answer():
+    """Depois que eu parei de olhar, o que foi coletado não entra."""
+    answered = LONG_AGO + timedelta(days=1)
+    report, repo = run(
+        [
+            legacy(1, user_action="CHAMEI", user_action_at=answered),
+            legacy(2, status="FILTERED", collected_at=answered - timedelta(hours=1)),
+            legacy(3, status="FILTERED", collected_at=answered + timedelta(days=30)),
+        ]
+    )
+    assert report.cutoff == answered.replace(tzinfo=UTC)
+    assert report.posts_after_cutoff == 1
+    assert [post.id for post in repo.list_posts()] == ["legacy-1", "legacy-2"]
+    assert report.tallies["legacy-agregado-truck"] == RecipeTally(successes=1, failures=1)
+
+
+def test_query_that_found_an_old_post_after_the_cutoff_does_not_count():
+    """Uma busca nova que reencontrou um post antigo depois do corte fica de fora."""
+    answered = LONG_AGO + timedelta(days=1)
+    _, repo = run(
+        [
+            legacy(
+                1,
+                user_action="CHAMEI",
+                user_action_at=answered,
+                queries=frozenset({"agregado truck", "kit natal"}),
+                query_first_seen={
+                    "agregado truck": LONG_AGO,
+                    "kit natal": answered + timedelta(days=40),
+                },
+            )
+        ]
+    )
+    assert [recipe.query for recipe in repo.list_recipes()] == ["agregado truck"]
+    [post] = repo.list_posts()
+    assert post.recipe_ids == {"legacy-agregado-truck"}
+
+
+def test_explicit_cutoff_wins():
+    late = LONG_AGO + timedelta(days=10)
+    report, repo = run(
+        [
+            legacy(1, user_action="CHAMEI", user_action_at=LONG_AGO),
+            legacy(2, status="FILTERED", collected_at=late),
+        ],
+        cutoff=late.replace(tzinfo=UTC),
+    )
+    assert report.posts_after_cutoff == 0
+    assert len(repo.list_posts()) == 2
+
+
+def test_without_any_answer_there_is_no_cutoff():
+    report, repo = run([legacy(1), legacy(2, status="FILTERED")])
+    assert report.cutoff is None
+    assert len(repo.list_posts()) == 2
 
 
 def test_filter_reason_is_kept_as_triage_reason():
@@ -196,6 +288,22 @@ def test_filter_reason_is_kept_as_triage_reason():
     [decision] = repo.list_triage_results()
     assert decision.result.approved is False
     assert decision.result.reason == "venda de caminhão"
+
+
+def test_group_urls_do_not_become_recipes():
+    """Coletor de grupos está fora do escopo: o post fica, a receita não."""
+    group = "https://www.facebook.com/groups/1083393589068947"
+    _, repo = run(
+        [
+            legacy(1, queries=frozenset({group}), user_action="CHAMEI"),
+            legacy(2, queries=frozenset({group, "agregado truck"}), status="FILTERED"),
+        ]
+    )
+    assert [recipe.id for recipe in repo.list_recipes()] == ["legacy-agregado-truck"]
+    posts = {post.id: post for post in repo.list_posts()}
+    assert posts["legacy-1"].recipe_ids == frozenset()
+    assert posts["legacy-2"].recipe_ids == {"legacy-agregado-truck"}
+    assert len(repo.list_feedback()) == 1
 
 
 def test_recipe_id_is_ascii_slug():

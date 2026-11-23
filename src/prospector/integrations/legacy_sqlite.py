@@ -14,14 +14,14 @@ from pathlib import Path
 from prospector.flows.ports import LegacyPost
 
 _POSTS_QUERY = """
-SELECT id, post_text, url, post_datetime, collected_at, search_query,
+SELECT id, post_text, image_url, url, post_datetime, collected_at, search_query,
        processing_status, filter_reason, vehicle, origin, destination,
        user_action, user_action_at, user_action_reason
 FROM posts
 ORDER BY id
 """
 
-_MATCHES_QUERY = "SELECT post_id, search_query FROM post_search_matches"
+_MATCHES_QUERY = "SELECT post_id, search_query, first_seen_at FROM post_search_matches"
 
 
 def _parse(value: str | None) -> datetime | None:
@@ -40,15 +40,18 @@ class LegacySqliteSource:
     def read_posts(self) -> list[LegacyPost]:
         uri = f"{self._path.resolve().as_uri()}?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
-            matches: dict[int, set[str]] = {}
-            for post_id, query in conn.execute(_MATCHES_QUERY):
-                matches.setdefault(post_id, set()).add(query)
+            first_seen: dict[int, dict[str, datetime]] = {}
+            for post_id, query, seen_at in conn.execute(_MATCHES_QUERY):
+                parsed = _parse(seen_at)
+                if parsed is not None:
+                    first_seen.setdefault(post_id, {})[query] = parsed
 
             posts = []
             for row in conn.execute(_POSTS_QUERY):
                 (
                     post_id,
                     text,
+                    image_url,
                     url,
                     posted_at,
                     collected_at,
@@ -62,11 +65,13 @@ class LegacySqliteSource:
                     user_action_at,
                     user_action_reason,
                 ) = row
-                queries = matches.get(post_id, set()) | ({query} if query else set())
+                seen = first_seen.get(post_id, {})
+                queries = set(seen) | ({query} if query else set())
                 posts.append(
                     LegacyPost(
                         legacy_id=post_id,
                         text=text,
+                        image_url=image_url,
                         url=url,
                         posted_at=_parse(posted_at),
                         collected_at=_parse(collected_at) or datetime.min,
@@ -79,6 +84,7 @@ class LegacySqliteSource:
                         user_action=user_action,
                         user_action_at=_parse(user_action_at),
                         user_action_reason=user_action_reason,
+                        query_first_seen=seen,
                     )
                 )
         conn.close()

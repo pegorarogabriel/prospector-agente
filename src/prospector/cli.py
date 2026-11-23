@@ -10,7 +10,7 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,8 +27,11 @@ def _database_url() -> str:
 
 
 def _print_report(report: ImportReport, repository: Repository) -> None:
+    cutoff = report.cutoff.strftime("%d/%m/%Y %H:%M UTC") if report.cutoff else "sem corte"
     print(f"Posts lidos do banco antigo: {report.posts_read}")
-    print(f"  sem texto (ignorados):     {report.posts_without_text}")
+    print(f"  corte (última resposta):   {cutoff}")
+    print(f"  depois do corte (fora):    {report.posts_after_cutoff}")
+    print(f"  sem texto nem imagem:      {report.posts_without_content}")
     print(f"Entraram agora: {report.recipes_added} receitas, {report.posts_added} posts, ", end="")
     print(f"{report.triage_results_added} decisões, {report.feedback_added} respostas")
     print()
@@ -57,12 +60,13 @@ def _cmd_import_legacy(args: argparse.Namespace) -> None:
     source = LegacySqliteSource(args.path)
     weight = float(os.environ.get("LEGACY_PRIOR_WEIGHT", LEGACY_PRIOR_WEIGHT))
     now = datetime.now(UTC)
+    cutoff = datetime.combine(args.until, time.max, tzinfo=UTC) if args.until else None
 
     if args.dry_run:
         from prospector.integrations.memory import InMemoryRepository
 
         repository = InMemoryRepository()
-        report = import_legacy(source, repository, now=now, weight=weight)
+        report = import_legacy(source, repository, now=now, cutoff=cutoff, weight=weight)
         print("[dry-run] nada foi gravado no banco.\n")
         _print_report(report, repository)
         return
@@ -74,7 +78,7 @@ def _cmd_import_legacy(args: argparse.Namespace) -> None:
     # Um bloco só: a importação inteira entra, ou nada entra.
     with psycopg.connect(_database_url()) as conn:
         postgres = PostgresRepository(conn)
-        report = import_legacy(source, postgres, now=now, weight=weight)
+        report = import_legacy(source, postgres, now=now, cutoff=cutoff, weight=weight)
         _print_report(report, postgres)
 
 
@@ -90,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     legacy = commands.add_parser("import-legacy", help="importa o histórico do FacebookProspector")
     legacy.add_argument("path", type=Path, help="caminho do prospector.db antigo")
+    legacy.add_argument(
+        "--until",
+        type=date.fromisoformat,
+        metavar="AAAA-MM-DD",
+        help="importa só o coletado até esse dia (padrão: dia da última resposta)",
+    )
     legacy.add_argument(
         "--dry-run", action="store_true", help="simula em memória, sem gravar no banco"
     )

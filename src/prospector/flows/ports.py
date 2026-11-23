@@ -8,8 +8,8 @@ conhecem estas assinaturas. É isso que deixa os testes rodarem sem banco.
 Ver `docs/arquitetura.md` seção 9.
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
@@ -64,6 +64,7 @@ class LegacyPost:
 
     legacy_id: int
     text: str | None
+    image_url: str | None
     url: str | None
     posted_at: datetime | None
     collected_at: datetime
@@ -82,6 +83,13 @@ class LegacyPost:
 
     user_action_at: datetime | None
     user_action_reason: str | None
+
+    query_first_seen: Mapping[str, datetime] = field(default_factory=dict)
+    """Quando cada busca trouxe o post pela primeira vez. Sem registro, vale `collected_at`.
+
+    Uma busca criada depois pode reencontrar um post antigo; esse reencontro
+    tem a data dele, não a do post.
+    """
 
 
 class LegacySource(Protocol):

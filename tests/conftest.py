@@ -15,6 +15,7 @@ CREATE TABLE posts (
     id INTEGER NOT NULL PRIMARY KEY,
     url TEXT,
     post_text TEXT,
+    image_url TEXT,
     author_name VARCHAR(255),
     author_profile_url TEXT,
     post_datetime DATETIME,
@@ -47,23 +48,23 @@ def legacy_db(tmp_path: Path) -> Path:
         conn.executescript(LEGACY_SCHEMA)
         conn.executemany(
             """
-            INSERT INTO posts (id, url, post_text, author_name, author_profile_url,
+            INSERT INTO posts (id, url, post_text, image_url, author_name, author_profile_url,
                 post_datetime, collected_at, search_query, processing_status,
                 filter_reason, vehicle, origin, destination,
                 user_action, user_action_at, user_action_reason)
-            VALUES (?, ?, ?, 'Fulano', 'https://facebook.com/fulano', ?, ?, ?, ?, ?, ?, ?, ?,
+            VALUES (?, ?, ?, ?, 'Fulano', 'https://facebook.com/fulano', ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?)
             """,
             [
-                (1, "https://fb.com/1", "Preciso agregado truck baú",
+                (1, "https://fb.com/1", "Preciso agregado truck baú", None,
                  "2026-09-07 19:08:43.000000", "2026-09-08 01:56:46.616337",
                  "agregado truck", "QUEUED", None, "truck", "Guarulhos", "Campinas",
                  "CHAMEI", "2026-09-08 02:30:49.087998", "rota boa"),
-                (2, "https://fb.com/2", "Vendo caminhão toco",
+                (2, "https://fb.com/2", None, "https://fbcdn.net/2.jpg",
                  "2026-09-07 20:00:00.000000", "2026-09-08 01:56:47.000000",
                  "agrega toco", "FILTERED", "venda", None, None, None,
                  None, None, None),
-                (3, None, None,
+                (3, None, None, None,
                  None, "2026-09-08 01:56:48.000000",
                  "agrega toco", "NO_DATE", None, None, None, None,
                  None, None, None),

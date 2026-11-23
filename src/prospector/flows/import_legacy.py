@@ -26,6 +26,11 @@ from prospector.flows.ports import LegacyPost, LegacySource, Repository, Triaged
 #: acertos antigos valem o mesmo que um acerto novo.
 LEGACY_PRIOR_WEIGHT = 0.2
 
+#: Posts mínimos no histórico para uma receita antiga começar ativa. Abaixo
+#: disso, a taxa estimada é quase só incerteza: uma busca testada uma vez, que
+#: trouxe 3 posts, não deve tirar a vaga de uma com 60 posts e 10 acertos.
+MIN_LEGACY_TRIALS_TO_ACTIVATE = 20
+
 #: Parâmetros do actor que o FacebookProspector usava em todas as buscas.
 LEGACY_PARAMS = {"searchType": "latest"}
 
@@ -49,13 +54,31 @@ class ImportReport:
     """O que a importação encontrou e o que de fato entrou no banco."""
 
     posts_read: int
-    posts_without_text: int
+    cutoff: datetime | None
+    """Posts coletados depois disso ficaram de fora. `None` se não houve resposta."""
+
+    posts_after_cutoff: int
+    posts_without_content: int
+    """Nem texto nem imagem: não há o que julgar."""
+
     recipes_added: int
     posts_added: int
     triage_results_added: int
     feedback_added: int
     tallies: dict[str, RecipeTally] = field(default_factory=dict)
     """Placar cru por receita, para conferir o prior à mão."""
+
+
+def is_search_term(query: str) -> bool:
+    """A busca antiga era um termo de busca, e não a URL de um grupo?
+
+    O FacebookProspector também raspava grupos com outro actor
+    (`apify/facebook-groups-scraper`), e gravava a URL do grupo em
+    `search_query`. Coletor de grupos está fora do escopo (seção 12): esses
+    posts entram como histórico, mas não viram receita — senão a coleta diária
+    mandaria uma URL como termo para o actor de busca.
+    """
+    return not query.strip().lower().startswith(("http://", "https://", "www."))
 
 
 def recipe_id_for(query: str) -> str:
@@ -69,12 +92,24 @@ def recipe_id_for(query: str) -> str:
     return f"legacy-{slug}"
 
 
+def _search_terms(old: LegacyPost, cutoff: datetime | None = None) -> list[str]:
+    """As buscas de verdade (não grupos) que trouxeram o post até o corte."""
+
+    def found_in_time(query: str) -> bool:
+        seen_at = old.query_first_seen.get(query, old.collected_at)
+        return cutoff is None or _as_utc(seen_at) <= cutoff
+
+    return sorted(query for query in old.queries if is_search_term(query) and found_in_time(query))
+
+
 def _as_utc(moment: datetime) -> datetime:
     """O banco antigo guardava UTC sem fuso. Aqui todo instante carrega o fuso."""
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
-def _translate(old: LegacyPost) -> tuple[Post, TriagedPost, Feedback | None]:
+def _translate(
+    old: LegacyPost, cutoff: datetime | None
+) -> tuple[Post, TriagedPost, Feedback | None]:
     """Um post antigo no vocabulário do `core`.
 
     - `FILTERED` vira descarte; qualquer outro status foi para a fila, então
@@ -89,9 +124,10 @@ def _translate(old: LegacyPost) -> tuple[Post, TriagedPost, Feedback | None]:
     post = Post(
         id=post_id,
         text=old.text or "",
+        image_url=old.image_url or None,
         url=old.url or "",
         posted_at=_as_utc(old.posted_at or old.collected_at),
-        recipe_ids=frozenset(recipe_id_for(query) for query in old.queries),
+        recipe_ids=frozenset(recipe_id_for(query) for query in _search_terms(old, cutoff)),
     )
     triaged = TriagedPost(
         post_id=post_id,
@@ -124,14 +160,17 @@ def _recipes_with_prior(
     *,
     weight: float,
     max_active: int,
+    min_trials: int = MIN_LEGACY_TRIALS_TO_ACTIVATE,
 ) -> list[Recipe]:
     """Uma receita por busca antiga, com o placar encolhido pelo peso.
 
     Prior `Beta(1 + k·acertos, 1 + k·erros)`: o `+1` já vem de `Recipe.alpha`
     e `Recipe.beta`, então aqui só entra a parte `k·`.
 
-    As `max_active` melhores pela taxa esperada começam ativas; as outras
-    ficam candidatas, esperando uma aposentadoria abrir vaga.
+    As `max_active` melhores pela taxa esperada começam ativas, mas só entre
+    as que têm pelo menos `min_trials` posts no histórico. Se não houver
+    receitas assim em número suficiente, as melhores restantes completam as
+    vagas. As outras ficam candidatas, esperando uma aposentadoria abrir vaga.
     """
     recipes = []
     for query in queries:
@@ -147,7 +186,19 @@ def _recipes_with_prior(
             )
         )
 
-    ranked = sorted(recipes, key=lambda recipe: (-recipe.expected_rate, -recipe.trials, recipe.id))
+    def evidence(recipe: Recipe) -> int:
+        tally = tallies[recipe.id]
+        return tally.successes + tally.failures
+
+    ranked = sorted(
+        recipes,
+        key=lambda recipe: (
+            evidence(recipe) < min_trials,
+            -recipe.expected_rate,
+            -recipe.trials,
+            recipe.id,
+        ),
+    )
     active_ids = {recipe.id for recipe in ranked[:max_active]}
     return [
         replace(
@@ -158,22 +209,41 @@ def _recipes_with_prior(
     ]
 
 
+def last_answer_at(old_posts: Sequence[LegacyPost]) -> datetime | None:
+    """Quando eu respondi pela última vez no sistema antigo."""
+    answered = [
+        _as_utc(old.user_action_at)
+        for old in old_posts
+        if old.user_action in _POST_WAS_GOOD and old.user_action_at is not None
+    ]
+    return max(answered, default=None)
+
+
 def import_legacy(
     source: LegacySource,
     repository: Repository,
     *,
     now: datetime,
+    cutoff: datetime | None = None,
     weight: float = LEGACY_PRIOR_WEIGHT,
     max_active: int = MAX_ACTIVE_RECIPES,
 ) -> ImportReport:
     """Lê o histórico antigo, calcula o prior das receitas e grava tudo.
+
+    **Corte:** só entra o que foi coletado até a minha última resposta (ou até
+    `cutoff`, se for passado). Depois disso eu parei de olhar, e o sistema
+    antigo seguiu coletando sozinho: são posts que ninguém avaliou, e todo
+    descarte deles viraria erro para as receitas sem que eu tivesse dito nada.
+    É a mesma lógica da semana sem feedback (seção 4), aplicada ao legado.
 
     Reexecutável: o repositório só insere o que ainda não existe. Uma segunda
     execução não duplica posts nem reseta o placar de uma receita que já
     aprendeu com dados novos.
     """
     old_posts = source.read_posts()
-    with_text = [old for old in old_posts if old.text and old.text.strip()]
+    cutoff = cutoff or last_answer_at(old_posts)
+    in_window = [old for old in old_posts if cutoff is None or _as_utc(old.collected_at) <= cutoff]
+    with_content = [old for old in in_window if (old.text and old.text.strip()) or old.image_url]
 
     posts: list[Post] = []
     triaged: list[TriagedPost] = []
@@ -181,8 +251,8 @@ def import_legacy(
     outcomes: dict[str, Counter[Outcome]] = {}
     query_by_id: dict[str, str] = {}
 
-    for old in with_text:
-        post, decision, answer = _translate(old)
+    for old in with_content:
+        post, decision, answer = _translate(old, cutoff)
         posts.append(post)
         triaged.append(decision)
         if answer is not None:
@@ -193,7 +263,7 @@ def import_legacy(
             feedback=answer,
             age=now - post.posted_at,
         )
-        for query in old.queries:
+        for query in _search_terms(old, cutoff):
             recipe_id = recipe_id_for(query)
             query_by_id.setdefault(recipe_id, query)
             outcomes.setdefault(recipe_id, Counter())[outcome] += 1
@@ -214,7 +284,9 @@ def import_legacy(
     posts_added = repository.add_posts(posts)
     return ImportReport(
         posts_read=len(old_posts),
-        posts_without_text=len(old_posts) - len(with_text),
+        cutoff=cutoff,
+        posts_after_cutoff=len(old_posts) - len(in_window),
+        posts_without_content=len(in_window) - len(with_content),
         recipes_added=recipes_added,
         posts_added=posts_added,
         triage_results_added=repository.add_triage_results(triaged),
