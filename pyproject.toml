@@ -1,10 +1,13 @@
 [project]
 name = "prospector"
 version = "0.1.0"
-description = "Agente que procura oportunidades de agregamento de caminhÃ£o e frete em posts pÃºblicos do Facebook"
+description = "Agente que procura oportunidades de agregamento de caminhão e frete em posts públicos do Facebook"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.0",
+]
 
 [dependency-groups]
 dev = [
@@ -33,12 +36,12 @@ select = [
     "N",   # pep8-naming
     "UP",  # pyupgrade
     "B",   # flake8-bugbear
-    "ANN", # flake8-annotations â€” "type hints em tudo" (CLAUDE.md)
+    "ANN", # flake8-annotations — "type hints em tudo" (CLAUDE.md)
     "RUF",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Testes nÃ£o precisam de anotaÃ§Ã£o de tipo em todo lugar.
+# Testes não precisam de anotação de tipo em todo lugar.
 "tests/**" = ["ANN"]
 
 [tool.pytest.ini_options]
