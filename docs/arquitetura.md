@@ -114,7 +114,7 @@ A regra se encaixa no que já existe, sem mudar as funções do bandit:
 Duas camadas, nessa ordem:
 
 1. **Regras determinísticas** (reaproveitadas do FacebookProspector): duplicados, idade máxima do post, região (raio a partir de Guarulhos), sinais óbvios de não-oportunidade (venda, consórcio, curso).
-2. **Juiz LLM:** lê o post e devolve saída estruturada:
+2. **Juiz LLM:** lê o post (texto **e imagem**) e devolve saída estruturada:
 
 ```json
 {
@@ -126,6 +126,17 @@ Duas camadas, nessa ordem:
   "destination": "Campinas"
 }
 ```
+
+### Posts só de imagem
+
+Muita oportunidade é postada só como imagem: um flyer, um print com o WhatsApp. No histórico antigo, 6 dos 19 posts que eu chamei eram assim. Então:
+
+- `Post.text` pode vir vazio quando há `image_url`. Post sem texto **e** sem imagem é descartado; sem texto, não.
+- As regras determinísticas que dependem de texto (região, palavras de venda) não descartam um post só porque não acharam texto. Na dúvida, quem decide é o juiz.
+- O juiz recebe a imagem junto do texto (o modelo é multimodal).
+- A URL de imagem do Facebook expira em poucos dias. O juiz precisa julgar no dia da coleta, o que já acontece. Para backtest e few-shot com imagem, a coleta guarda uma cópia da imagem (etapa 3).
+
+### Prompt do juiz
 
 O prompt do juiz é montado a partir de:
 - **Regras de triagem** em linguagem natural, versionadas no banco (tabela `triage_rules`). São elas que o agente semanal ajusta.
@@ -218,7 +229,7 @@ Por que aprovei: truck, dentro da região, carga seca
 src/prospector/
 ├── cli.py           ponto de montagem: escolhe a implementação de cada porta
 ├── core/            regras de negócio puras, SEM dependências externas
-│   ├── post.py          Post, TriageResult
+│   ├── post.py          Post (texto e/ou imagem), TriageResult
 │   ├── recipe.py        Recipe (termo, params, alpha, beta, status)
 │   ├── feedback.py      Feedback (post, veredito, motivo, origem)
 │   ├── bandit.py        Thompson Sampling, decay, aposentadoria
@@ -296,8 +307,11 @@ O banco antigo (`prospector.db`, SQLite) tem o que precisamos:
   - `FILTERED` vira descarte; qualquer outro status foi para a fila, então vira aprovação.
   - `CHAMEI`/`NAO_CHAMEI` diz se o post era bom. O `Verdict` é "certo" quando decisão e post concordam. Um post filtrado que eu chamei mesmo assim vira auditoria com "errou".
   - `PULAR` era adiamento, não decisão: conta como sem resposta.
+- **Corte na minha última resposta.** Só entra o que foi coletado até a data da minha última resposta (`--until` muda o corte). Depois disso eu parei de olhar e o sistema antigo seguiu coletando sozinho: todo descarte viraria erro sem eu ter dito nada. É a regra da semana sem feedback (seção 4), aplicada ao legado. Uma busca que reencontrou um post antigo depois do corte também não conta para ele.
+- Posts só de imagem entram (seção 5). Post sem texto e sem imagem fica de fora.
+- Buscas que eram URL de grupo (coletor de grupos, fora do escopo) não viram receita; os posts delas entram como histórico.
 - Cada `search_query` antigo vira uma receita com prior `Beta(1 + k·acertos, 1 + k·erros)`, com `k = 0.2` (dado velho vale menos).
-- As 4 receitas com maior taxa esperada começam **ativas**; as outras, **candidatas**. Uma busca antiga que nunca foi rotulada tem taxa 0.5 (incerteza) e por isso ganha de uma que só trouxe lixo.
+- As 4 receitas com maior taxa esperada começam **ativas**, mas só entre as que têm **pelo menos 20 posts** no histórico; as outras ficam **candidatas**. Sem esse mínimo, uma busca testada uma vez, com 3 posts, teria taxa perto de 0.5 (quase só incerteza) e tiraria a vaga de uma com 60 posts e 10 acertos. Se faltarem receitas com 20 posts, as melhores restantes completam as vagas.
 - Reexecutável: só insere o que não existe. Reimportar não duplica posts nem reseta o placar de uma receita que já aprendeu.
 - Comando: `prospector import-legacy <caminho> [--dry-run]`. O arquivo é aberto só para leitura.
 - Posts rotulados viram base de exemplos e de backtest.
