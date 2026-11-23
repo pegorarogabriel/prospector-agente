@@ -21,11 +21,14 @@ CREATE TABLE recipes (
 
 CREATE TABLE posts (
     id            text PRIMARY KEY,
+    -- Vazio quando o post é só imagem; nunca os dois vazios.
     text          text NOT NULL,
+    image_url     text,
     url           text NOT NULL,
     posted_at     timestamptz NOT NULL,
     location      text,
-    collected_at  timestamptz NOT NULL DEFAULT now()
+    collected_at  timestamptz NOT NULL DEFAULT now(),
+    CHECK (btrim(text) <> '' OR image_url IS NOT NULL)
 );
 
 CREATE INDEX posts_posted_at_idx ON posts (posted_at);

@@ -106,3 +106,17 @@ def test_one_answer_per_post_and_question(repository):
     )
     assert repository.add_feedback([ANSWER, audit, flipped]) == 2
     assert repository.list_feedback() == [audit, ANSWER]
+
+
+def test_image_only_post_round_trips(repository):
+    repository.add_recipes([RECIPE])
+    flyer = Post(
+        id="p2",
+        text="",
+        url="https://fb.com/2",
+        posted_at=WHEN,
+        image_url="https://fbcdn.net/flyer.jpg",
+        recipe_ids=frozenset({RECIPE.id}),
+    )
+    assert repository.add_posts([flyer]) == 1
+    assert repository.list_posts() == [flyer]

@@ -17,6 +17,10 @@ class Post:
 
     Campos de autor (nome, perfil) não entram aqui: não são necessários para
     aprender, e o repositório é público.
+
+    Muita oportunidade é postada só como imagem (um flyer, um print com o
+    WhatsApp). Por isso `text` pode vir vazio quando há `image_url`: o post
+    continua sendo um post, e o juiz olha a imagem (seção 5).
     """
 
     id: str
@@ -25,6 +29,12 @@ class Post:
     posted_at: datetime
     location: str | None = None
     recipe_ids: frozenset[str] = field(default_factory=frozenset)
+    image_url: str | None = None
+
+    @property
+    def has_content(self) -> bool:
+        """Tem alguma coisa para julgar: texto ou imagem."""
+        return bool(self.text.strip()) or bool(self.image_url)
 
     def age(self, now: datetime) -> timedelta:
         """Quanto tempo faz que o post foi publicado."""

@@ -118,11 +118,14 @@ class PostgresRepository:
     def add_posts(self, posts: Sequence[Post]) -> int:
         added = self._insert_each(
             """
-            INSERT INTO posts (id, text, url, posted_at, location)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO posts (id, text, image_url, url, posted_at, location)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
-            [(post.id, post.text, post.url, post.posted_at, post.location) for post in posts],
+            [
+                (post.id, post.text, post.image_url, post.url, post.posted_at, post.location)
+                for post in posts
+            ],
         )
         self._insert_each(
             """
@@ -138,18 +141,19 @@ class PostgresRepository:
         for post_id, recipe_id in self._conn.execute("SELECT post_id, recipe_id FROM post_recipes"):
             recipe_ids.setdefault(post_id, set()).add(recipe_id)
         rows = self._conn.execute(
-            "SELECT id, text, url, posted_at, location FROM posts ORDER BY id"
+            "SELECT id, text, image_url, url, posted_at, location FROM posts ORDER BY id"
         )
         return [
             Post(
                 id=id_,
                 text=text,
+                image_url=image_url,
                 url=url,
                 posted_at=posted_at,
                 location=location,
                 recipe_ids=frozenset(recipe_ids.get(id_, set())),
             )
-            for id_, text, url, posted_at, location in rows
+            for id_, text, image_url, url, posted_at, location in rows
         ]
 
     # --- triagem ----------------------------------------------------------
