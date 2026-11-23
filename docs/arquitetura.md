@@ -101,9 +101,13 @@ O sistema precisa continuar funcionando quando eu não respondo. A regra é: **s
 
 ### Implementação
 
-- `core/bandit.py`: `update_scores` e `apply_decay` recebem a semana e não fazem nada se ela não tiver feedback. A regra vive no `core`, com testes.
-- `agent/graph.py`: depois de `aguardar_respostas`, uma aresta condicional pula direto para `enviar_resumo` quando não houver feedback.
-- Tabela `weeks` (ou equivalente) guarda `has_feedback` e o contador de semanas seguidas sem feedback.
+A regra se encaixa no que já existe, sem mudar as funções do bandit:
+
+- **Congelar = pular `atualizar_placares`.** Esse é o único nó que mexe em placar, decay e aposentadoria (seção 6). Em `agent/graph.py`, depois de `aguardar_respostas`, uma aresta condicional vai direto para `enviar_resumo` quando a semana não tem feedback. `decay_all`, `should_retire` e `retire` continuam do jeito que estão.
+- **A decisão vive no `core`, com testes.** `core/feedback.py` ganha funções puras que recebem a lista de `Feedback` e dizem se a semana teve resposta e quantas semanas seguidas ficaram sem resposta. O grafo só consulta essas funções.
+- **Os descartes da semana congelada não contam depois.** `atualizar_placares` processa só os posts da semana corrente, então a semana pulada não é cobrada na volta.
+- **Corte no orçamento:** `core/budget.py`, em `daily_budget`, recebe as semanas seguidas sem feedback e reduz o teto pela metade a partir de 4.
+- **Sem tabela nova.** Se a semana teve feedback é derivado das datas dos registros de feedback no banco (etapa 2). O contador de semanas seguidas sai da mesma consulta.
 
 ## 5. Triagem (limpar o lixo)
 
@@ -140,6 +144,8 @@ enviar_auditoria  ──►  Telegram: "Descartei. Confirma?"
    ▼
 ⏸ aguardar_respostas   (interrupt; retomado pela rotina de respostas
    │                     ou automaticamente na segunda às 8h)
+   │
+   ├── semana sem feedback? ──►  enviar_resumo  ("nada mudou", seção 4)
    ▼
 atualizar_placares     (código puro: alpha/beta, decay, aposentadoria)
    │
