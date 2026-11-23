@@ -61,12 +61,17 @@ class PostgresRepository:
         self._conn = conn
 
     def _insert_each(self, sql: str, rows: Sequence[tuple[object, ...]]) -> int:
-        added = 0
+        """Insere em lote e devolve quantas linhas entraram de fato.
+
+        `executemany` usa o modo pipeline do psycopg 3: manda todas as linhas
+        sem esperar a resposta de cada uma. Com o banco na nuvem, uma ida e
+        volta por linha transformaria 1.000 posts em minutos de espera.
+        """
+        if not rows:
+            return 0
         with self._conn.cursor() as cur:
-            for row in rows:
-                cur.execute(sql, row)
-                added += cur.rowcount
-        return added
+            cur.executemany(sql, rows)
+            return cur.rowcount
 
     # --- receitas ---------------------------------------------------------
 
