@@ -1,6 +1,6 @@
 """Orçamento do Apify: uma trava em código, não uma sugestão ao LLM.
 
-Ver `docs/arquitetura.md` seção 6. O plano Free do Apify dá US$ 5/mês de crédito,
+Ver `docs/arquitetura.md` seção 7. O plano Free do Apify dá US$ 5/mês de crédito,
 ≈ 1.000 posts; o crédito não acumula e, quando acaba, o Apify bloqueia. O agente
 decide como distribuir o orçamento, nunca quanto gastar acima do teto.
 """

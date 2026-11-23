@@ -1,4 +1,4 @@
-"""Protege as regras de arquitetura descritas em `docs/arquitetura.md` seção 8.
+"""Protege as regras de arquitetura descritas em `docs/arquitetura.md` seção 9.
 
 A regra de dependência é `integrations -> flows -> core`. O `core` não importa
 nada de fora da biblioteca padrão, e nenhuma camada importa outra que esteja
