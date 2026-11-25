@@ -8,6 +8,7 @@ entra junto no fim — ou nada entra, se algo falhar no meio.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 from importlib import resources
 
 import psycopg
@@ -16,7 +17,7 @@ from psycopg.types.json import Jsonb
 from prospector.core.feedback import Feedback, FeedbackSource, Verdict
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe, RecipeOrigin, RecipeStatus
-from prospector.flows.ports import TriagedPost
+from prospector.flows.ports import SearchRun, TriagedPost
 
 _MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -245,3 +246,26 @@ class PostgresRepository:
             )
             for post_id, verdict, source, answered_at, reason in rows
         ]
+
+    # --- buscas e orçamento -----------------------------------------------
+
+    def existing_post_ids(self, ids: Sequence[str]) -> set[str]:
+        if not ids:
+            return set()
+        rows = self._conn.execute("SELECT id FROM posts WHERE id = ANY(%s)", (list(ids),))
+        return {post_id for (post_id,) in rows}
+
+    def add_search_runs(self, runs: Sequence[SearchRun]) -> int:
+        return self._insert_each(
+            """
+            INSERT INTO search_runs (ran_at, recipe_id, requested, charged, live)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            [(run.ran_at, run.recipe_id, run.requested, run.charged, run.live) for run in runs],
+        )
+
+    def results_spent_since(self, moment: datetime) -> int:
+        row = self._conn.execute(
+            "SELECT coalesce(sum(charged), 0) FROM search_runs WHERE ran_at >= %s", (moment,)
+        ).fetchone()
+        return int(row[0]) if row else 0

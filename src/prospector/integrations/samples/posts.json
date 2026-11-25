@@ -1,0 +1,118 @@
+[
+  {
+    "_comment": "Oferta boa, dentro da região.",
+    "postId": "sample-001",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-001",
+    "postText": "Estamos agregando truck baú para rotas Guarulhos x Campinas. Carga seca, pagamento semanal. Chamar no zap.",
+    "hours_ago": 3,
+    "attachments": []
+  },
+  {
+    "_comment": "Só imagem, com o texto lido pelo Facebook.",
+    "postId": "sample-002",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-002",
+    "postText": "",
+    "hours_ago": 5,
+    "attachments": [
+      {
+        "type": "photo",
+        "id": "img-002",
+        "url": "https://scontent.example.fbcdn.net/sample-002.jpg",
+        "accessibilityCaption": "May be an image of truck and text that says 'AGREGAMOS TOCO BAÚ - JUNDIAÍ'"
+      }
+    ]
+  },
+  {
+    "_comment": "Só imagem, sem transcrição: vai para o juiz.",
+    "postId": "sample-003",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-003",
+    "postText": "Chama no zap!",
+    "hours_ago": 8,
+    "attachments": [
+      {
+        "type": "photo",
+        "id": "img-003",
+        "url": "https://scontent.example.fbcdn.net/sample-003.jpg",
+        "accessibilityCaption": "May be an image of truck and road"
+      }
+    ]
+  },
+  {
+    "_comment": "Venda de caminhão.",
+    "postId": "sample-004",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-004",
+    "postText": "Vendo caminhão truck baú 2016, único dono, revisado.",
+    "hours_ago": 4,
+    "attachments": []
+  },
+  {
+    "_comment": "Espanhol: 'agregado' quer dizer 'adicionado'.",
+    "postId": "sample-005",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-005",
+    "postText": "Hola amigos, he agregado una nueva foto de mi hijo en el parque, gracias a Dios por todo.",
+    "hours_ago": 2,
+    "attachments": []
+  },
+  {
+    "_comment": "Veículo incompatível.",
+    "postId": "sample-006",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-006",
+    "postText": "Agregamos carreta sider para rotas no interior.",
+    "hours_ago": 6,
+    "attachments": []
+  },
+  {
+    "_comment": "Fora de SP.",
+    "postId": "sample-007",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-007",
+    "postText": "Preciso de agregado truck baú, saída Guarulhos destino Belo Horizonte.",
+    "hours_ago": 10,
+    "attachments": []
+  },
+  {
+    "_comment": "Post velho.",
+    "postId": "sample-008",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-008",
+    "postText": "Contratamos agregado toco baú para entregas em Osasco.",
+    "hours_ago": 80,
+    "attachments": []
+  },
+  {
+    "_comment": "Motorista se oferecendo: passa, com sinal para o juiz.",
+    "postId": "sample-009",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-009",
+    "postText": "Tenho truck baú disponível para fretes na região de São Paulo.",
+    "hours_ago": 7,
+    "attachments": []
+  },
+  {
+    "_comment": "Sem sinal de frete.",
+    "postId": "sample-010",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-010",
+    "postText": "Promoção de velas aromáticas, entregamos em toda a cidade.",
+    "hours_ago": 1,
+    "attachments": []
+  },
+  {
+    "_comment": "Oferta boa, com vídeo (vídeo não conta como imagem).",
+    "postId": "sample-011",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-011",
+    "postText": "Precisamos de agregado truck baú para Mogi das Cruzes e Suzano, carga fixa.",
+    "hours_ago": 12,
+    "attachments": [
+      {
+        "type": "video",
+        "id": "vid-011",
+        "url": "https://video.example.fbcdn.net/sample-011.mp4",
+        "accessibilityCaption": ""
+      }
+    ]
+  },
+  {
+    "_comment": "Sem data: o Apify cobra, mas não vira post.",
+    "postId": "sample-012",
+    "url": "https://www.facebook.com/groups/exemplo/posts/sample-012",
+    "postText": "Agregamos truck baú, chamar no privado.",
+    "attachments": []
+  }
+]

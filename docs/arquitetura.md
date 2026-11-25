@@ -113,7 +113,16 @@ A regra se encaixa no que já existe, sem mudar as funções do bandit:
 
 Duas camadas, nessa ordem:
 
-1. **Regras determinísticas** (reaproveitadas do FacebookProspector): duplicados, idade máxima do post, região (raio a partir de Guarulhos), sinais óbvios de não-oportunidade (venda, consórcio, curso).
+1. **Regras determinísticas** (`core/rules.py`, portadas do FacebookProspector). Rodam nesta ordem, e o motivo mais específico ganha:
+   1. idade: post com mais de `MAX_POST_AGE_HOURS = 48`;
+   2. veículo ou carroceria incompatível (carreta, VUC, fiorino, sider, graneleiro…), a não ser que a oferta também cite o que serve (oferta mista passa, marcada);
+   3. sem texto **e** sem imagem;
+   4. idioma estrangeiro ("agregado" em espanhol é "adicionado");
+   5. sem sinal de frete, só quando há texto e **não** há imagem;
+   6. venda, financiamento, curso, oficina, proteção veicular, plataforma de cotação (com exceção para quem também fala de agregamento, menos anúncio de veículo);
+   7. região (`core/region.py`): outro estado, ou só cidades fora do raio de 100 km de `HOME_BASE`. Sem cidade reconhecida, segue.
+
+   "Motorista se oferecendo" não é filtro: vira um sinal para o juiz. Duplicados são resolvidos antes das regras, pelo id do post.
 2. **Juiz LLM:** lê o post (texto **e imagem**) e devolve saída estruturada:
 
 ```json
@@ -132,9 +141,10 @@ Duas camadas, nessa ordem:
 Muita oportunidade é postada só como imagem: um flyer, um print com o WhatsApp. No histórico antigo, 6 dos 19 posts que eu chamei eram assim. Então:
 
 - `Post.text` pode vir vazio quando há `image_url`. Post sem texto **e** sem imagem é descartado; sem texto, não.
+- O Apify traz, em cada imagem, o texto alternativo que o Facebook gera (`accessibilityCaption`: "May be an image of text that says '…'"). A coleta junta ao texto do post **só a transcrição entre aspas**. A descrição genérica fica de fora: é inglês e confundiria a regra de idioma.
 - As regras determinísticas que dependem de texto (região, palavras de venda) não descartam um post só porque não acharam texto. Na dúvida, quem decide é o juiz.
 - O juiz recebe a imagem junto do texto (o modelo é multimodal).
-- A URL de imagem do Facebook expira em poucos dias. O juiz precisa julgar no dia da coleta, o que já acontece. Para backtest e few-shot com imagem, a coleta guarda uma cópia da imagem (etapa 3).
+- A URL de imagem do Facebook expira em poucos dias. O juiz precisa julgar no dia da coleta, o que já acontece. Para backtest e few-shot com imagem, a coleta guarda uma cópia da imagem (etapa 4, junto com o juiz).
 
 ### Prompt do juiz
 
@@ -205,6 +215,11 @@ Apify, actor `scraper_one/facebook-posts-search`, plano Free: US$ 5/mês de cré
 
 O orçamento é uma **trava em código**. O agente decide como distribuir, nunca quanto gastar acima do teto.
 
+- **Fonte do gasto:** cada chamada ao Apify grava uma linha em `search_runs` (pedido e cobrado). "Gasto do mês" é a soma do cobrado desde o dia 1º.
+- **Trava antes de cada busca**, não só no começo da coleta: se uma busca cobrar mais que o pedido, a próxima é barrada.
+- O Apify cobra todo item devolvido, inclusive o que não vira post (sem data, sem texto nem imagem).
+- `prospector collect --dry-run --live` (teste da integração, até 10 resultados) não grava posts, mas **grava o gasto**: o crédito foi consumido e a trava precisa saber.
+
 ## 8. Telegram
 
 **Mensagem de post aprovado:**
@@ -233,7 +248,10 @@ src/prospector/
 │   ├── recipe.py        Recipe (termo, params, alpha, beta, status)
 │   ├── feedback.py      Feedback (post, veredito, motivo, origem)
 │   ├── bandit.py        Thompson Sampling, decay, aposentadoria
-│   └── budget.py        cálculo do orçamento diário
+│   ├── budget.py        cálculo do orçamento diário
+│   ├── rules.py         regras determinísticas da triagem
+│   ├── region.py        cidades conhecidas e raio a partir da base
+│   └── text.py          normalização de texto
 ├── flows/           casos de uso: o que o sistema faz
 │   ├── ports.py         interfaces: Repository, LegacySource, SearchProvider, Judge, Messenger
 │   ├── collect.py       coleta e triagem diária
@@ -245,10 +263,12 @@ src/prospector/
 │   ├── nodes.py
 │   └── tools.py         tools chamam os flows, nunca as integrações direto
 └── integrations/    implementações concretas das portas
-    ├── apify.py
+    ├── apify.py         SearchProvider sobre o actor do Apify
+    ├── fakes.py         busca com posts de exemplo e juiz falso (dry-run e testes)
+    ├── samples/         posts de exemplo, inventados, no formato do Apify
     ├── telegram.py
     ├── postgres.py      Repository sobre Postgres + migrador
-    ├── sql/             migrações numeradas (001_initial.sql, ...)
+    ├── sql/             migrações numeradas (001_initial.sql, 002_search_runs.sql, ...)
     ├── memory.py        Repository em memória: fake dos testes e do --dry-run
     ├── legacy_sqlite.py LegacySource sobre o prospector.db antigo
     └── llm.py           Claude via langchain-anthropic

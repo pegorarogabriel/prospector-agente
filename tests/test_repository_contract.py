@@ -6,14 +6,14 @@ se comportar diferente do banco real, os testes que usam o fake estariam
 mentindo — e é aqui que isso aparece.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from prospector.core.feedback import Feedback, FeedbackSource, Verdict
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe, RecipeOrigin, RecipeStatus
-from prospector.flows.ports import Repository, TriagedPost
+from prospector.flows.ports import Repository, SearchRun, TriagedPost
 from prospector.integrations.memory import InMemoryRepository
 
 WHEN = datetime(2026, 11, 20, 15, 30, tzinfo=UTC)
@@ -120,3 +120,31 @@ def test_image_only_post_round_trips(repository):
     )
     assert repository.add_posts([flyer]) == 1
     assert repository.list_posts() == [flyer]
+
+
+def test_existing_post_ids(repository):
+    repository.add_recipes([RECIPE, CHILD])
+    repository.add_posts([POST])
+    assert repository.existing_post_ids(["p1", "p9"]) == {"p1"}
+    assert repository.existing_post_ids([]) == set()
+
+
+def test_spend_counts_charged_results_since_a_moment(repository):
+    repository.add_recipes([RECIPE])
+    last_month = WHEN - timedelta(days=30)
+    runs = [
+        SearchRun(ran_at=last_month, recipe_id=RECIPE.id, requested=20, charged=20, live=True),
+        SearchRun(ran_at=WHEN, recipe_id=RECIPE.id, requested=10, charged=8, live=True),
+        SearchRun(ran_at=WHEN, recipe_id=RECIPE.id, requested=10, charged=10, live=True),
+    ]
+    assert repository.add_search_runs(runs) == 3
+    assert repository.results_spent_since(WHEN - timedelta(days=1)) == 18
+    assert repository.results_spent_since(WHEN + timedelta(days=1)) == 0
+
+
+def test_search_runs_are_events_and_always_enter(repository):
+    repository.add_recipes([RECIPE])
+    run = SearchRun(ran_at=WHEN, recipe_id=RECIPE.id, requested=5, charged=5, live=True)
+    repository.add_search_runs([run])
+    repository.add_search_runs([run])
+    assert repository.results_spent_since(WHEN) == 10
