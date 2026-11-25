@@ -16,6 +16,7 @@ from typing import Protocol
 from prospector.core.feedback import Feedback
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe
+from prospector.core.rules import RuleVerdict
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,23 @@ class TriagedPost:
 
     post_id: str
     result: TriageResult
+
+
+@dataclass(frozen=True)
+class SearchRun:
+    """Uma chamada ao Apify: quanto foi pedido e quanto foi cobrado.
+
+    É a fonte do "gasto do mês" que a trava de orçamento consulta antes de toda
+    busca (seção 7). Registra também os testes `--live` do dry-run: o crédito
+    foi consumido, então a trava precisa saber.
+    """
+
+    ran_at: datetime
+    recipe_id: str
+    requested: int
+    charged: int
+    live: bool
+    """`True` para coleta de verdade ou teste `--live`. (Hoje toda linha é live.)"""
 
 
 class Repository(Protocol):
@@ -52,6 +70,42 @@ class Repository(Protocol):
     def add_feedback(self, feedback: Sequence[Feedback]) -> int: ...
 
     def list_feedback(self) -> list[Feedback]: ...
+
+    def existing_post_ids(self, ids: Sequence[str]) -> set[str]:
+        """Quais destes posts já estão no banco (vistos numa coleta anterior)."""
+        ...
+
+    def add_search_runs(self, runs: Sequence[SearchRun]) -> int:
+        """Registra chamadas ao Apify. São eventos: sempre entram, nunca deduplicam."""
+        ...
+
+    def results_spent_since(self, moment: datetime) -> int:
+        """Resultados cobrados pelo Apify desde `moment` (o 1º dia do mês, na trava)."""
+        ...
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """O que uma busca devolveu e quanto ela custou."""
+
+    posts: list[Post]
+    charged: int
+    """Resultados cobrados. Pode ser maior que `len(posts)`: item sem texto, imagem
+    ou data que não vira post também é cobrado."""
+
+
+class SearchProvider(Protocol):
+    """De onde vêm os posts: o Apify, ou posts de exemplo no dry-run."""
+
+    def search(
+        self, query: str, params: Mapping[str, str], *, limit: int, since: datetime
+    ) -> SearchResult: ...
+
+
+class Judge(Protocol):
+    """A camada 2 da triagem: lê o post que passou nas regras e decide."""
+
+    def judge(self, post: Post, verdict: RuleVerdict) -> TriageResult: ...
 
 
 @dataclass(frozen=True)

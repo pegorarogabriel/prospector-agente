@@ -7,11 +7,12 @@ roda os mesmos testes nos dois para garantir que o fake não mente.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from prospector.core.feedback import Feedback
 from prospector.core.post import Post
 from prospector.core.recipe import Recipe
-from prospector.flows.ports import TriagedPost
+from prospector.flows.ports import SearchRun, TriagedPost
 
 
 class InMemoryRepository:
@@ -22,6 +23,7 @@ class InMemoryRepository:
         self._posts: dict[str, Post] = {}
         self._triage: dict[str, TriagedPost] = {}
         self._feedback: dict[tuple[str, str], Feedback] = {}
+        self._search_runs: list[SearchRun] = []
 
     def add_recipes(self, recipes: Sequence[Recipe]) -> int:
         added = 0
@@ -69,3 +71,13 @@ class InMemoryRepository:
         return sorted(
             self._feedback.values(), key=lambda answer: (answer.post_id, answer.source.value)
         )
+
+    def existing_post_ids(self, ids: Sequence[str]) -> set[str]:
+        return {post_id for post_id in ids if post_id in self._posts}
+
+    def add_search_runs(self, runs: Sequence[SearchRun]) -> int:
+        self._search_runs.extend(runs)
+        return len(runs)
+
+    def results_spent_since(self, moment: datetime) -> int:
+        return sum(run.charged for run in self._search_runs if run.ran_at >= moment)
