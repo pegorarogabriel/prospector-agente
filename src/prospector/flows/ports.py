@@ -17,6 +17,7 @@ from prospector.core.feedback import Feedback
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe
 from prospector.core.rules import RuleVerdict
+from prospector.core.triage import TriageRule
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,15 @@ class TriagedPost:
 
     post_id: str
     result: TriageResult
+
+
+@dataclass(frozen=True)
+class LabeledPost:
+    """Um post com a decisão da triagem e a minha resposta sobre ela."""
+
+    post: Post
+    decision: TriageResult
+    feedback: Feedback
 
 
 @dataclass(frozen=True)
@@ -70,6 +80,16 @@ class Repository(Protocol):
     def add_feedback(self, feedback: Sequence[Feedback]) -> int: ...
 
     def list_feedback(self) -> list[Feedback]: ...
+
+    def add_triage_rules(self, rules: Sequence[TriageRule]) -> int: ...
+
+    def list_triage_rules(self) -> list[TriageRule]:
+        """Todas as regras, ativas ou não, em ordem de id."""
+        ...
+
+    def list_labeled_posts(self) -> list[LabeledPost]:
+        """Posts que têm decisão e resposta minha: o gabarito do backtest."""
+        ...
 
     def existing_post_ids(self, ids: Sequence[str]) -> set[str]:
         """Quais destes posts já estão no banco (vistos numa coleta anterior)."""

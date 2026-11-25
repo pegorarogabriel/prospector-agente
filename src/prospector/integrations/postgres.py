@@ -17,7 +17,8 @@ from psycopg.types.json import Jsonb
 from prospector.core.feedback import Feedback, FeedbackSource, Verdict
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe, RecipeOrigin, RecipeStatus
-from prospector.flows.ports import SearchRun, TriagedPost
+from prospector.core.triage import TriageRule
+from prospector.flows.ports import LabeledPost, SearchRun, TriagedPost
 
 _MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -269,3 +270,29 @@ class PostgresRepository:
             "SELECT coalesce(sum(charged), 0) FROM search_runs WHERE ran_at >= %s", (moment,)
         ).fetchone()
         return int(row[0]) if row else 0
+
+    # --- regras e gabarito ------------------------------------------------
+
+    def add_triage_rules(self, rules: Sequence[TriageRule]) -> int:
+        return self._insert_each(
+            """
+            INSERT INTO triage_rules (id, text, active, created_by) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            [(rule.id, rule.text, rule.active, rule.created_by) for rule in rules],
+        )
+
+    def list_triage_rules(self) -> list[TriageRule]:
+        rows = self._conn.execute(
+            "SELECT id, text, active, created_by FROM triage_rules ORDER BY id"
+        )
+        return [TriageRule(*row) for row in rows]
+
+    def list_labeled_posts(self) -> list[LabeledPost]:
+        posts = {post.id: post for post in self.list_posts()}
+        decisions = {item.post_id: item.result for item in self.list_triage_results()}
+        return [
+            LabeledPost(posts[answer.post_id], decisions[answer.post_id], answer)
+            for answer in self.list_feedback()
+            if answer.post_id in posts and answer.post_id in decisions
+        ]
