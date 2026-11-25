@@ -186,3 +186,11 @@ def test_cost_counts_cache_reads_at_a_tenth():
     totals = UsageTotals(calls=1, input_tokens=1_000_000, cache_read_tokens=1_000_000)
     assert totals.cost_usd("claude-haiku-5-5") == pytest.approx(0.10 + 0.01)
     assert totals.cost_usd("modelo-desconhecido") is None
+
+
+def test_system_prompt_carries_the_base_constraint():
+    """O caminhão sai de Guarulhos e volta: o juiz precisa saber disso."""
+    system = judge_with()[0].system_prompt
+    assert "sai de Guarulhos e volta para Guarulhos" in system
+    assert "até uns 30 km" in system
+    assert "Não deduza a região pelo DDD" in system

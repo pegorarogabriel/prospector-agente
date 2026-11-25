@@ -5,16 +5,33 @@ import pytest
 from prospector.core.region import RegionStatus, analyze_region, find_cities, haversine_km
 
 
-def test_city_inside_radius():
-    result = analyze_region("Carga saindo de Jundiaí")
+def test_city_near_the_base():
+    result = analyze_region("Carga saindo de Itaquaquecetuba")
     assert result.status is RegionStatus.INSIDE
-    assert result.origin == "jundiai"
+    assert result.origin == "itaquaquecetuba"
 
 
-def test_city_outside_radius():
+def test_city_far_from_the_base():
     result = analyze_region("Rota para Ribeirão Preto")
     assert result.status is RegionStatus.OUTSIDE
-    assert result.detail.startswith("fora do raio: ribeirao preto")
+    assert result.detail.startswith("longe da base: ribeirao preto")
+
+
+@pytest.mark.parametrize("city", ["Sorocaba", "Sumaré", "Campinas", "Jundiaí", "Mogi das Cruzes"])
+def test_operation_based_in_another_city_is_out_even_if_close(city):
+    """O caminhão sai de Guarulhos e volta: não compensa operar a partir de lá."""
+    result = analyze_region(f"Agregamos truck baú para operação em {city}")
+    assert result.status is RegionStatus.OUTSIDE
+
+
+def test_far_destination_is_fine_when_leaving_from_the_base():
+    """Sair de Guarulhos e entregar em Campinas, voltando, serve."""
+    assert analyze_region("Rota Guarulhos x Campinas").status is RegionStatus.INSIDE
+
+
+@pytest.mark.parametrize("city", ["São Paulo", "Arujá", "Santo André", "Osasco", "Mairiporã"])
+def test_greater_sao_paulo_close_to_guarulhos_is_in(city):
+    assert analyze_region(f"Carga em {city}").status is RegionStatus.INSIDE
 
 
 def test_another_state_wins_over_a_city_inside():

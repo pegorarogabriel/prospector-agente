@@ -14,6 +14,18 @@ O FacebookProspector coletava muitos posts e a maioria era lixo (venda de caminh
 
 **Meu papel:** revisor do resultado do agente, não triador.
 
+### A operação (o que define "oportunidade")
+
+Uma transportadora com caminhões **truck e toco, com baú**, baseada em **Guarulhos (SP)**. O que ela procura é empresa que queira agregar esses caminhões, ou que tenha carga para eles.
+
+**A limitação que manda em tudo: o caminhão sai da base e volta para a base.** Não compensa deslocar o caminhão para operar em outra cidade, mesmo perto. Por isso:
+
+- **a origem** (onde o caminhão carrega ou se apresenta) precisa ficar a **até ~30 km de Guarulhos**: Guarulhos, Arujá, Itaquaquecetuba, Poá, Mairiporã, as zonas Norte e Leste de São Paulo; em linha reta, isso inclui a capital, o ABC e Osasco. Uma operação baseada em Sorocaba, Campinas, Sumaré, Jundiaí ou Mogi não serve, mesmo a menos de 100 km;
+- **o destino** pode ser longe, **desde que dentro do estado de SP**: sair de Guarulhos e entregar em Campinas, voltando, serve;
+- **fora do estado de SP** não serve.
+
+Esse contexto vai nas regras fixas (seção 5, região), nas regras do juiz (`triage_rules`) e no papel do juiz (`integrations/llm.py`).
+
 ## 2. Visão geral
 
 Duas rotinas e uma ponte com o celular:
@@ -120,7 +132,7 @@ Duas camadas, nessa ordem:
    4. idioma estrangeiro ("agregado" em espanhol é "adicionado");
    5. sem sinal de frete, só quando há texto e **não** há imagem;
    6. venda, financiamento, curso, oficina, proteção veicular, plataforma de cotação (com exceção para quem também fala de agregamento, menos anúncio de veículo);
-   7. região (`core/region.py`): outro estado, ou só cidades fora do raio de 100 km de `HOME_BASE`. Sem cidade reconhecida, segue.
+   7. região (`core/region.py`): outro estado, ou **nenhuma** cidade citada a até 30 km de `HOME_BASE` (seção 1: a origem precisa ser perto; o destino pode ser longe). "Guarulhos x Campinas" passa, porque Guarulhos está no raio; "operação em Sorocaba" cai. Sem cidade reconhecida, segue. É uma aproximação: a regra não sabe qual cidade é a origem. Um post que só cita o destino ("entrega em Campinas") cai, e isso é aceito porque a origem desconhecida raramente é Guarulhos.
 
    "Motorista se oferecendo" não é filtro: vira um sinal para o juiz. Duplicados são resolvidos antes das regras, pelo id do post.
 2. **Juiz LLM:** lê o post (texto **e imagem**) e devolve saída estruturada:

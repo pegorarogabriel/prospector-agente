@@ -33,9 +33,19 @@ PRICES_PER_MILLION = {"claude-haiku-5-5": (0.10, 0.50)}
 #: A resposta é um JSON curto; isto só evita corte no meio.
 MAX_TOKENS = 2048
 
-ROLE = """Você é o juiz de uma prospecção de fretes. A operação tem caminhões truck e toco \
-com baú, baseados em Guarulhos (SP), e procura empresas que queiram agregar esses \
-caminhões ou que tenham carga para eles.
+ROLE = """Você é o juiz de uma prospecção de fretes. A operação é uma transportadora com \
+caminhões truck e toco, com baú, baseada em Guarulhos (SP). Ela procura empresas que \
+queiram agregar esses caminhões ou que tenham carga para eles.
+
+Limitação da operação: o caminhão sai de Guarulhos e volta para Guarulhos. Não compensa \
+deslocar o caminhão para operar em outra cidade. Então:
+- a origem (onde o caminhão carrega ou se apresenta) precisa ficar a até uns 30 km de \
+Guarulhos: Guarulhos, Arujá, Itaquaquecetuba, Poá, Mairiporã, zonas Norte e Leste de São \
+Paulo, e no limite a capital, o ABC e Osasco. Operação baseada em Sorocaba, Campinas, \
+Sumaré, Jundiaí ou Mogi das Cruzes não serve, mesmo sendo perto;
+- o destino pode ser longe, desde que dentro do estado de São Paulo;
+- fora do estado de São Paulo não serve.
+Não deduza a região pelo DDD do telefone: use só as cidades citadas no post.
 
 Você recebe posts públicos do Facebook que já passaram por um filtro automático \
 (idioma, venda óbvia, veículo incompatível, região). Decida se o dono da operação \
