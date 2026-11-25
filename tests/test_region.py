@@ -64,3 +64,13 @@ def test_portuguese_se_after_a_comma_is_not_sergipe():
     assert analyze_region("Agregamos caminhão, se você tem truck chama").status is (
         RegionStatus.UNKNOWN
     )
+
+
+@pytest.mark.parametrize("text", ["Cadastre-se e receba cargas", "Precisa-se de truck baú"])
+def test_hyphenated_se_is_not_sergipe(text):
+    assert analyze_region(text).status is RegionStatus.UNKNOWN
+
+
+@pytest.mark.parametrize("text", ["Entrega em Itabaiana/SE", "Entrega em Itabaiana - SE"])
+def test_uf_after_slash_or_spaced_hyphen_still_counts(text):
+    assert analyze_region(text).status is RegionStatus.OUTSIDE

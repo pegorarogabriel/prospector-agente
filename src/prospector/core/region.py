@@ -319,10 +319,11 @@ _STATE_OUTSIDE_SP = re.compile(
 )
 
 # UF de outro estado logo depois de uma cidade: "santa vitoria/mg", "contagem - mg".
-# Só depois de "/" ou "-": depois de vírgula, "se" é o "se" do português, não
-# Sergipe ("...caminhão, se você precisa..."). O antigo aceitava vírgula.
+# O antigo aceitava qualquer separador, e "se" virava Sergipe em português comum:
+# "caminhão, se você..." (vírgula) e "cadastre-se", "precisa-se" (hífen colado).
+# Agora: barra, ou hífen com espaço de algum lado.
 _UF_OUTSIDE_SP = re.compile(
-    r"[a-z]{2,}\s*[/\-]\s*"
+    r"[a-z]{2,}(?:\s*/\s*|\s+-\s*|\s*-\s+)"
     r"(mg|rj|es|pr|sc|rs|rn|ba|go|ms|mt|df|pe|ce|ma|pb|al|se|pi|to|ro|ac|am|ap|rr)\b"
 )
 
