@@ -12,12 +12,19 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
 from prospector.flows.collect import CollectReport, CollectSettings
 from prospector.flows.import_legacy import LEGACY_PRIOR_WEIGHT, ImportReport, import_legacy
 from prospector.flows.ports import Repository
+
+if TYPE_CHECKING:
+    from prospector.core.triage import FewShotExample
+    from prospector.flows.backtest import BacktestReport
+    from prospector.flows.ports import Judge, SearchProvider
+    from prospector.integrations.llm import ClaudeJudge
 
 
 def _database_url() -> str:
@@ -106,12 +113,48 @@ def _print_collect(report: CollectReport, queries: dict[str, str]) -> None:
     print("Posts e decisões gravados." if report.wrote else "Nenhum post ou decisão gravado.")
 
 
+def _apify_search() -> "SearchProvider":
+    from prospector.integrations.apify import ApifySearchProvider
+
+    token = os.environ.get("APIFY_TOKEN", "").strip()
+    if not token:
+        sys.exit("APIFY_TOKEN não configurado no .env.")
+    actor = os.environ.get("APIFY_ACTOR_ID", "").strip() or "scraper_one/facebook-posts-search"
+    return ApifySearchProvider(token, actor)
+
+
+def _claude_judge(repository: Repository, examples: "list[FewShotExample]") -> "ClaudeJudge":
+    """O juiz real, com as regras do banco e os exemplos escolhidos."""
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        sys.exit("ANTHROPIC_API_KEY não configurada no .env.")
+    import anthropic
+
+    from prospector.integrations.llm import DEFAULT_MODEL, ClaudeJudge
+
+    model = os.environ.get("JUDGE_MODEL", "").strip() or DEFAULT_MODEL
+    return ClaudeJudge(
+        client=anthropic.Anthropic(),
+        rules=repository.list_triage_rules(),
+        examples=examples,
+        model=model,
+    )
+
+
+def _print_usage(judge: object) -> None:
+    usage = getattr(judge, "usage", None)
+    if usage is None or not usage.calls:
+        return
+    cost = usage.cost_usd(judge.model)
+    price = f"US$ {cost:.4f}" if cost is not None else "preço desconhecido"
+    print(
+        f"Juiz: {usage.calls} chamadas, {usage.input_tokens} tokens de entrada, "
+        f"{usage.cache_read_tokens} lidos do cache, {usage.output_tokens} de saída ({price})"
+    )
+
+
 def _cmd_collect(args: argparse.Namespace) -> None:
-    if not args.dry_run:
-        sys.exit(
-            "A coleta de verdade liga quando o juiz real existir (etapa 4). "
-            "Por enquanto use --dry-run, ou --dry-run --live para testar o Apify."
-        )
+    if args.live and not args.dry_run:
+        sys.exit("--live só faz sentido junto com --dry-run.")
     if not 1 <= args.limit <= MAX_LIVE_TEST_RESULTS:
         sys.exit(f"--limit precisa estar entre 1 e {MAX_LIVE_TEST_RESULTS}.")
 
@@ -119,42 +162,112 @@ def _cmd_collect(args: argparse.Namespace) -> None:
 
     import psycopg
 
+    from prospector.flows.backtest import choose_examples
     from prospector.flows.collect import collect
-    from prospector.flows.ports import SearchProvider
+    from prospector.flows.ports import Judge, SearchProvider
     from prospector.integrations.fakes import FakeJudge, SampleSearchProvider
     from prospector.integrations.postgres import PostgresRepository
 
     now = datetime.now(UTC)
-    search: SearchProvider
-    if args.live:
-        from prospector.integrations.apify import ApifySearchProvider
-
-        token = os.environ.get("APIFY_TOKEN", "").strip()
-        if not token:
-            sys.exit("APIFY_TOKEN não configurado no .env.")
-        actor = os.environ.get("APIFY_ACTOR_ID", "").strip() or "scraper_one/facebook-posts-search"
-        search = ApifySearchProvider(token, actor)
-        print(f"[dry-run --live] buscando no Apify de verdade, até {args.limit} resultados.\n")
+    real_search = not args.dry_run or args.live
+    if not args.dry_run:
+        print("[coleta real] Apify + juiz real; posts, decisões e gasto são gravados.\n")
+    elif args.live:
+        print(f"[dry-run --live] Apify e juiz de verdade, até {args.limit} resultados.\n")
     else:
-        search = SampleSearchProvider(now=now)
-        print("[dry-run] posts de exemplo no lugar do Apify; nada é gravado.\n")
+        print("[dry-run] posts de exemplo e juiz falso; nada é gravado.\n")
 
-    # Só o teste --live grava algo: o gasto, porque o crédito foi consumido.
+    # Tudo num bloco: se algo falhar no meio, nada da coleta fica pela metade.
     with psycopg.connect(_database_url()) as conn:
         repository = PostgresRepository(conn)
         queries = {recipe.id: recipe.query for recipe in repository.list_recipes()}
+        search: SearchProvider = _apify_search() if real_search else SampleSearchProvider(now=now)
+        judge: Judge = (
+            _claude_judge(repository, choose_examples(repository.list_labeled_posts()))
+            if real_search
+            else FakeJudge()
+        )
         report = collect(
             repository,
             search,
-            FakeJudge(),
+            judge,
             now=now,
             rng=random.Random(),
             settings=_collect_settings(),
-            record_spend=args.live,
-            write=False,
+            record_spend=real_search,
+            write=not args.dry_run,
             test_limit=args.limit if args.live else None,
         )
     _print_collect(report, queries)
+    _print_usage(judge)
+
+
+def _pct(value: float | None) -> str:
+    return f"{value:.0%}" if value is not None else "-"
+
+
+def _print_backtest(report: "BacktestReport") -> None:
+    good = sum(example.good for example in report.examples)
+    print(
+        f"Exemplos no prompt: {good} bons e {len(report.examples) - good} ruins (fora da medição)"
+    )
+    print(f"Posts medidos: {len(report.cases)}  ", end="")
+    print(f"(só imagem, pulados: {report.skipped_image_only}; ", end="")
+    print(f"fora da amostra: {report.skipped_by_limit})\n")
+    print(f"{'':<14}{'acerto':>8}{'precisão':>10}{'recall':>8}    VP  FP  FN  VN")
+    for label, confusion in (
+        ("regras", report.rules),
+        ("juiz", report.judge),
+        ("duas camadas", report.combined),
+    ):
+        print(
+            f"{label:<14}{_pct(confusion.accuracy):>8}{_pct(confusion.precision):>10}"
+            f"{_pct(confusion.recall):>8}   {confusion.true_positive:>3} "
+            f"{confusion.false_positive:>3} {confusion.false_negative:>3} "
+            f"{confusion.true_negative:>3}"
+        )
+    print("\nprecisão: do que foi aprovado, quanto era bom (baixa = celular cheio de lixo)")
+    print("recall: do que era bom, quanto foi aprovado (baixo = oportunidade perdida)")
+
+    if report.rule_errors:
+        print("\nPosts bons que as regras jogaram fora:")
+        for case in report.rule_errors:
+            snippet = case.post.text.replace("\n", " ")[:70]
+            print(f"  - {case.rules.reason} | {snippet}")
+    if report.judge_errors:
+        print("\nErros do juiz:")
+        for case in report.judge_errors:
+            kind = "aprovou, mas você não chamou" if case.approved else "reprovou, mas você chamou"
+            snippet = case.post.text.replace("\n", " ")[:70]
+            print(f"  - {kind}: {snippet}")
+            print(f"      juiz: {case.judged.reason}")
+            if case.my_reason:
+                print(f"      você: {case.my_reason}")
+
+
+def _cmd_backtest(args: argparse.Namespace) -> None:
+    import psycopg
+
+    from prospector.flows.backtest import run_backtest
+    from prospector.integrations.fakes import FakeJudge
+    from prospector.integrations.postgres import PostgresRepository
+
+    if args.dry_run:
+        print("[dry-run] juiz falso: testa o encanamento, sem custo.\n")
+    built: list[object] = []
+    with psycopg.connect(_database_url()) as conn:
+        repository = PostgresRepository(conn)
+
+        def make_judge(examples: "list[FewShotExample]") -> "Judge":
+            judge = FakeJudge() if args.dry_run else _claude_judge(repository, examples)
+            built.append(judge)
+            return judge
+
+        report = run_backtest(repository.list_labeled_posts(), make_judge, limit=args.limit)
+    _print_backtest(report)
+    print()
+    if built:
+        _print_usage(built[0])
 
 
 def _cmd_migrate(_: argparse.Namespace) -> None:
@@ -225,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument(
         "--live",
         action="store_true",
-        help="com --dry-run: busca no Apify de verdade (gasta crédito; grava só o gasto)",
+        help="com --dry-run: Apify e juiz de verdade (gasta crédito; grava só o gasto)",
     )
     collect.add_argument(
         "--limit",
@@ -234,6 +347,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"resultados do teste --live (1 a {MAX_LIVE_TEST_RESULTS}, padrão 5)",
     )
     collect.set_defaults(handler=_cmd_collect)
+
+    backtest = commands.add_parser("backtest", help="mede o juiz contra as minhas respostas")
+    backtest.add_argument(
+        "--dry-run", action="store_true", help="juiz falso: testa o encanamento sem custo"
+    )
+    backtest.add_argument("--limit", type=int, default=None, help="mede só N posts")
+    backtest.set_defaults(handler=_cmd_backtest)
     return parser
 
 

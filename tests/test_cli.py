@@ -14,9 +14,9 @@ def test_import_legacy_dry_run_writes_nothing_and_reports(legacy_db, capsys):
     assert "legacy-agrega-toco" in out
 
 
-def test_real_collection_is_blocked_until_the_real_judge_exists():
-    with pytest.raises(SystemExit, match="etapa 4"):
-        main(["collect"])
+def test_live_flag_needs_dry_run():
+    with pytest.raises(SystemExit, match="--live"):
+        main(["collect", "--live"])
 
 
 def test_live_test_limit_is_capped():
