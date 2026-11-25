@@ -46,8 +46,11 @@ uv run pytest
 uv run prospector db migrate                                  # cria/atualiza as tabelas
 uv run prospector import-legacy caminho/prospector.db --dry-run  # simula a importação
 uv run prospector import-legacy caminho/prospector.db            # grava de verdade
-uv run prospector collect --dry-run
+uv run prospector collect --dry-run                           # coleta simulada: exemplos + juiz falso
+uv run prospector collect --dry-run --live --limit 5          # testa o Apify de verdade (gasta crédito)
 ```
+
+A coleta de verdade (`prospector collect`, sem `--dry-run`) fica bloqueada até o juiz real existir (etapa 4).
 
 Os testes de Postgres pulam sem `TEST_DATABASE_URL`. Para rodá-los, aponte essa variável para um Postgres qualquer: cada teste cria um schema temporário e o apaga no fim.
 
