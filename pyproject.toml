@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "Agente que procura oportunidades de agregamento de caminhão e frete em posts públicos do Facebook"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+prospector = "prospector.cli:main"
 
 [dependency-groups]
 dev = [
