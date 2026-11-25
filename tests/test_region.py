@@ -57,3 +57,10 @@ def test_unknown_base_fails_loudly():
 
 def test_haversine_guarulhos_to_campinas():
     assert haversine_km(-23.4543, -46.5337, -22.9099, -47.0626) == pytest.approx(81, abs=1)
+
+
+def test_portuguese_se_after_a_comma_is_not_sergipe():
+    """ "...caminhão, se você precisa" não é Sergipe. O antigo caía nessa."""
+    assert analyze_region("Agregamos caminhão, se você tem truck chama").status is (
+        RegionStatus.UNKNOWN
+    )

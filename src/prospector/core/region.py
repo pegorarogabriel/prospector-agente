@@ -319,8 +319,10 @@ _STATE_OUTSIDE_SP = re.compile(
 )
 
 # UF de outro estado logo depois de uma cidade: "santa vitoria/mg", "contagem - mg".
+# Só depois de "/" ou "-": depois de vírgula, "se" é o "se" do português, não
+# Sergipe ("...caminhão, se você precisa..."). O antigo aceitava vírgula.
 _UF_OUTSIDE_SP = re.compile(
-    r"[a-z]{2,}\s*[/\-,]\s*"
+    r"[a-z]{2,}\s*[/\-]\s*"
     r"(mg|rj|es|pr|sc|rs|rn|ba|go|ms|mt|df|pe|ce|ma|pb|al|se|pi|to|ro|ac|am|ap|rr)\b"
 )
 
