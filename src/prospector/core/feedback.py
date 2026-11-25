@@ -96,3 +96,12 @@ def is_triage_error(*, feedback: Feedback | None) -> bool:
     semanal, que é quem ajusta as regras de triagem.
     """
     return feedback is not None and feedback.verdict is Verdict.WRONG
+
+
+def post_was_good(*, approved: bool, feedback: Feedback) -> bool:
+    """O post era bom? É o gabarito do backtest e dos exemplos do juiz.
+
+    O `Verdict` é sobre a decisão, então o post era bom quando a decisão e o
+    veredito concordam: aprovado e "certo", ou descartado e "errado".
+    """
+    return approved == (feedback.verdict is Verdict.RIGHT)
