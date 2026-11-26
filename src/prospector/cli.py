@@ -23,8 +23,11 @@ from prospector.flows.ports import Repository
 if TYPE_CHECKING:
     from prospector.core.triage import FewShotExample
     from prospector.flows.backtest import BacktestReport
-    from prospector.flows.ports import Judge, SearchProvider
+    from prospector.flows.ingest_replies import IngestReport
+    from prospector.flows.notify import NotifyReport
+    from prospector.flows.ports import Judge, PostMessage, SearchProvider
     from prospector.integrations.llm import ClaudeJudge
+    from prospector.integrations.telegram import TelegramMessenger
 
 
 def _database_url() -> str:
@@ -80,7 +83,12 @@ def _collect_settings() -> CollectSettings:
     )
 
 
-def _print_collect(report: CollectReport, queries: dict[str, str]) -> None:
+def _print_collect(report: CollectReport, queries: dict[str, str], *, summary: bool) -> None:
+    """Relatório da coleta. Com `summary`, só números: nada de texto de post.
+
+    Log do GitHub Actions em repositório público é público, e os posts têm
+    nome e telefone de gente real.
+    """
     print(f"Gasto no mês antes desta coleta: {report.spent_before} resultados")
     print(f"Orçamento de hoje: {report.budget} resultados\n")
 
@@ -97,20 +105,55 @@ def _print_collect(report: CollectReport, queries: dict[str, str]) -> None:
 
     approved = [d for d in report.decisions if d.result.approved]
     dropped = [d for d in report.decisions if not d.result.approved]
+    judged = [d for d in report.decisions if d.judged]
     print(f"\nPosts novos: {len(report.decisions)}  ", end="")
-    print(f"(descartados pelas regras: {len(dropped)}, aprovados pelo juiz: {len(approved)})")
-    for decision in dropped:
-        print(f"  ✗ {decision.post.id:<20} {decision.result.reason}")
-    notify = {d.post.id for d in report.to_notify}
-    for decision in sorted(approved, key=lambda d: d.result.score, reverse=True):
-        mark = "→ Telegram" if decision.post.id in notify else ""
-        kind = "imagem" if decision.post.image_url else "texto"
-        snippet = (decision.post.text or "(só imagem)").replace("\n", " ")[:50]
-        print(f"  ✓ {decision.post.id:<20} {decision.result.score:.2f} [{kind}] {snippet} {mark}")
+    print(f"(barrados pelas regras: {len(report.decisions) - len(judged)}, ", end="")
+    print(f"julgados: {len(judged)}, aprovados: {len(approved)})")
+    if not summary:
+        for decision in dropped:
+            print(f"  ✗ {decision.post.id:<20} {decision.result.reason}")
+        notify = {d.post.id for d in report.to_notify}
+        for decision in sorted(approved, key=lambda d: d.result.score, reverse=True):
+            mark = "→ Telegram" if decision.post.id in notify else ""
+            kind = "imagem" if decision.post.image_url else "texto"
+            snippet = (decision.post.text or "(só imagem)").replace("\n", " ")[:50]
+            line = f"{decision.post.id:<20} {decision.result.score:.2f} [{kind}] {snippet}"
+            print(f"  ✓ {line} {mark}")
 
     print()
     print("Gasto gravado em search_runs." if report.recorded_spend else "Nenhum gasto gravado.")
     print("Posts e decisões gravados." if report.wrote else "Nenhum post ou decisão gravado.")
+
+
+def _telegram() -> "TelegramMessenger":
+    from prospector.integrations.telegram import TelegramMessenger
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token:
+        sys.exit("TELEGRAM_BOT_TOKEN não configurado no .env.")
+    if not chat.lstrip("-").isdigit():
+        sys.exit("TELEGRAM_CHAT_ID não configurado. Rode `prospector telegram chats` para achar.")
+    return TelegramMessenger(token, int(chat))
+
+
+def _print_preview(messages: "list[PostMessage]") -> None:
+    from prospector.integrations.telegram import render_post
+
+    print(f"\nMensagens que iriam pro Telegram: {len(messages)}")
+    for message in messages:
+        body = render_post(message)
+        print("  " + "-" * 60)
+        for line in body["text"].splitlines():
+            print(f"  {line}")
+        for [button] in body["reply_markup"]["inline_keyboard"]:
+            print(f"  [{button['text']}]")
+
+
+def _print_notify(report: "NotifyReport") -> None:
+    print(f"\nTelegram: {len(report.sent)} enviados, {len(report.failed)} com erro")
+    for post_id, error in report.failed:
+        print(f"  erro no post {post_id}: {error}")
 
 
 def _apify_search() -> "SearchProvider":
@@ -164,20 +207,22 @@ def _cmd_collect(args: argparse.Namespace) -> None:
 
     from prospector.flows.backtest import choose_examples
     from prospector.flows.collect import collect
+    from prospector.flows.notify import build_messages, notify_approved
     from prospector.flows.ports import Judge, SearchProvider
     from prospector.integrations.fakes import FakeJudge, SampleSearchProvider
     from prospector.integrations.postgres import PostgresRepository
 
     now = datetime.now(UTC)
     real_search = not args.dry_run or args.live
+    # Antes de gastar Apify e LLM: coleta real sem Telegram não chegaria em ninguém.
+    messenger = _telegram() if not args.dry_run else None
     if not args.dry_run:
-        print("[coleta real] Apify + juiz real; posts, decisões e gasto são gravados.\n")
+        print("[coleta real] Apify + juiz real; grava tudo e manda os aprovados.\n")
     elif args.live:
         print(f"[dry-run --live] Apify e juiz de verdade, até {args.limit} resultados.\n")
     else:
-        print("[dry-run] posts de exemplo e juiz falso; nada é gravado.\n")
+        print("[dry-run] posts de exemplo e juiz falso; nada é gravado nem enviado.\n")
 
-    # Tudo num bloco: se algo falhar no meio, nada da coleta fica pela metade.
     with psycopg.connect(_database_url()) as conn:
         repository = PostgresRepository(conn)
         queries = {recipe.id: recipe.query for recipe in repository.list_recipes()}
@@ -198,8 +243,74 @@ def _cmd_collect(args: argparse.Namespace) -> None:
             write=not args.dry_run,
             test_limit=args.limit if args.live else None,
         )
-    _print_collect(report, queries)
-    _print_usage(judge)
+        _print_collect(report, queries, summary=args.summary)
+        _print_usage(judge)
+
+        if messenger is None:
+            if not args.summary:
+                _print_preview(build_messages(repository, report.to_notify, now=now))
+            return
+        # A coleta fica gravada antes do envio: se o Telegram falhar, os posts
+        # e o gasto não se perdem. Cada notificação aponta para um post já salvo.
+        conn.commit()
+        notified = notify_approved(repository, messenger, report.to_notify, now=now)
+    _print_notify(notified)
+    if report.to_notify and not notified.sent:
+        sys.exit("Nenhum aprovado chegou ao Telegram.")
+
+
+def _print_ingest(report: "IngestReport", *, write: bool, summary: bool) -> None:
+    print(f"Atualizações lidas: {report.replies_read}")
+    print(f"  sem notificação conhecida:  {report.unknown_message}")
+    print(f"  'Outro' esperando o motivo: {report.waiting_reason}")
+    print(f"Respostas novas: {len(report.feedback)}", end="")
+    print(f" (gravadas: {report.recorded})" if write else " (dry-run: nada gravado)")
+    if not summary:
+        for answer in report.feedback:
+            mark = "✓" if answer.verdict.value == "right" else "✗"
+            print(f"  {mark} {answer.post_id:<20} {answer.reason or ''}")
+
+
+def _cmd_ingest_replies(args: argparse.Namespace) -> None:
+    import psycopg
+
+    from prospector.flows.ingest_replies import confirm_replies, ingest_replies
+    from prospector.integrations.postgres import PostgresRepository
+
+    messenger = _telegram()
+    if args.dry_run:
+        print("[dry-run] lê o Telegram, mas não grava nem confirma nada.\n")
+    with psycopg.connect(_database_url()) as conn:
+        report = ingest_replies(PostgresRepository(conn), messenger, write=not args.dry_run)
+        # O celular só diz "registrado" depois que o banco confirmou.
+        conn.commit()
+    _print_ingest(report, write=not args.dry_run, summary=args.summary)
+    if args.dry_run:
+        return
+    for error in confirm_replies(messenger, report):
+        print(f"  confirmação no celular falhou: {error}")
+
+
+def _cmd_telegram_chats(_: argparse.Namespace) -> None:
+    from prospector.integrations.telegram import TelegramMessenger, chats_from_updates
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        sys.exit("TELEGRAM_BOT_TOKEN não configurado no .env.")
+    # Sem offset: só olha, não confirma nada. As respostas continuam lá para
+    # o `ingest-replies`.
+    chats = chats_from_updates(TelegramMessenger(token, 0).fetch_updates(None))
+    if not chats:
+        print("Nenhuma mensagem recente. Mande um 'oi' para o bot e rode de novo.")
+        return
+    print("Chats que falaram com o bot (coloque o seu em TELEGRAM_CHAT_ID):")
+    for chat_id, name in chats.items():
+        print(f"  {chat_id}  {name}")
+
+
+def _cmd_telegram_ping(_: argparse.Namespace) -> None:
+    _telegram().send_text("Prospector: teste de conexão. Se chegou, o bot está configurado.")
+    print("Mensagem de teste enviada.")
 
 
 def _pct(value: float | None) -> str:
@@ -308,6 +419,9 @@ def _cmd_import_legacy(args: argparse.Namespace) -> None:
         _print_report(report, postgres)
 
 
+_SUMMARY_HELP = "só números, sem texto de post (para log público do GitHub Actions)"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="prospector", description="Prospector Agente")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -346,7 +460,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help=f"resultados do teste --live (1 a {MAX_LIVE_TEST_RESULTS}, padrão 5)",
     )
+    collect.add_argument("--summary", action="store_true", help=_SUMMARY_HELP)
     collect.set_defaults(handler=_cmd_collect)
+
+    replies = commands.add_parser("ingest-replies", help="grava meus ✓/✗ do Telegram no banco")
+    replies.add_argument(
+        "--dry-run", action="store_true", help="lê e mostra, sem gravar nem confirmar"
+    )
+    replies.add_argument("--summary", action="store_true", help=_SUMMARY_HELP)
+    replies.set_defaults(handler=_cmd_ingest_replies)
+
+    telegram = commands.add_parser("telegram", help="configuração do bot")
+    telegram_commands = telegram.add_subparsers(dest="telegram_command", required=True)
+    telegram_commands.add_parser(
+        "chats", help="lista quem falou com o bot (para achar o TELEGRAM_CHAT_ID)"
+    ).set_defaults(handler=_cmd_telegram_chats)
+    telegram_commands.add_parser("ping", help="manda uma mensagem de teste").set_defaults(
+        handler=_cmd_telegram_ping
+    )
 
     backtest = commands.add_parser("backtest", help="mede o juiz contra as minhas respostas")
     backtest.add_argument(

@@ -48,10 +48,21 @@ uv run prospector import-legacy caminho/prospector.db --dry-run  # simula a impo
 uv run prospector import-legacy caminho/prospector.db            # grava de verdade
 uv run prospector collect --dry-run                           # coleta simulada: exemplos + juiz falso
 uv run prospector collect --dry-run --live --limit 5          # Apify e juiz de verdade, sem gravar posts
-uv run prospector collect                                     # coleta real: grava posts, decisões e gasto
+uv run prospector collect                                     # coleta real: grava tudo e manda os aprovados pro Telegram
 uv run prospector backtest --dry-run                          # backtest com juiz falso (sem custo)
 uv run prospector backtest --limit 10                         # backtest com o juiz real numa amostra
+uv run prospector telegram chats                              # acha o TELEGRAM_CHAT_ID (mande um "oi" pro bot antes)
+uv run prospector telegram ping                               # mensagem de teste no celular
+uv run prospector ingest-replies --dry-run                    # mostra meus ✓/✗ pendentes, sem gravar
+uv run prospector ingest-replies                              # grava as respostas no banco
 ```
+
+### Telegram
+
+1. Crie o bot com o [@BotFather](https://t.me/BotFather) (`/newbot`) e ponha o token em `TELEGRAM_BOT_TOKEN`.
+2. Mande um "oi" para o bot e rode `uv run prospector telegram chats`. O número que aparecer vai em `TELEGRAM_CHAT_ID`.
+3. `uv run prospector telegram ping` deve chegar no celular.
+4. Para rodar sozinho, cadastre os mesmos valores nos Secrets do GitHub (ver `docs/arquitetura.md` seção 10).
 
 Os testes de Postgres pulam sem `TEST_DATABASE_URL`. Para rodá-los, aponte essa variável para um Postgres qualquer: cada teste cria um schema temporário e o apaga no fim.
 

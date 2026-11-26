@@ -22,3 +22,24 @@ def test_live_flag_needs_dry_run():
 def test_live_test_limit_is_capped():
     with pytest.raises(SystemExit, match="--limit"):
         main(["collect", "--dry-run", "--live", "--limit", "50"])
+
+
+@pytest.mark.parametrize("command", [["ingest-replies"], ["telegram", "ping"]])
+def test_telegram_commands_need_the_token(command, monkeypatch):
+    # load_dotenv não sobrescreve o que já está no ambiente: o .env local não vaza aqui.
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    with pytest.raises(SystemExit, match="TELEGRAM_BOT_TOKEN"):
+        main(command)
+
+
+def test_telegram_commands_need_the_chat_id(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
+    with pytest.raises(SystemExit, match="telegram chats"):
+        main(["ingest-replies"])
+
+
+def test_real_collect_checks_telegram_before_spending(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    with pytest.raises(SystemExit, match="TELEGRAM_BOT_TOKEN"):
+        main(["collect"])

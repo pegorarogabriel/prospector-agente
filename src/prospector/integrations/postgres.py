@@ -15,10 +15,13 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from prospector.core.feedback import Feedback, FeedbackSource, Verdict
+from prospector.core.notification import Notification
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe, RecipeOrigin, RecipeStatus
 from prospector.core.triage import TriageRule
 from prospector.flows.ports import LabeledPost, SearchRun, TriagedPost
+
+_REPLY_OFFSET_KEY = "telegram_reply_offset"
 
 _MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -296,3 +299,65 @@ class PostgresRepository:
             for answer in self.list_feedback()
             if answer.post_id in posts and answer.post_id in decisions
         ]
+
+    # --- telegram ---------------------------------------------------------
+
+    def add_notifications(self, notifications: Sequence[Notification]) -> int:
+        return self._insert_each(
+            """
+            INSERT INTO notifications
+                (chat_id, message_id, post_id, source, sent_at, reject_reasons)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (chat_id, message_id) DO NOTHING
+            """,
+            [
+                (
+                    item.chat_id,
+                    item.message_id,
+                    item.post_id,
+                    item.source.value,
+                    item.sent_at,
+                    Jsonb(list(item.reject_reasons)),
+                )
+                for item in notifications
+            ],
+        )
+
+    def find_notifications(
+        self, chat_id: int, message_ids: Sequence[int]
+    ) -> dict[int, Notification]:
+        if not message_ids:
+            return {}
+        rows = self._conn.execute(
+            """
+            SELECT chat_id, message_id, post_id, source, sent_at, reject_reasons
+            FROM notifications WHERE chat_id = %s AND message_id = ANY(%s)
+            """,
+            (chat_id, list(message_ids)),
+        )
+        return {
+            message_id: Notification(
+                chat_id=chat,
+                message_id=message_id,
+                post_id=post_id,
+                source=FeedbackSource(source),
+                sent_at=sent_at,
+                reject_reasons=tuple(reasons),
+            )
+            for chat, message_id, post_id, source, sent_at, reasons in rows
+        }
+
+    def reply_offset(self) -> int | None:
+        row = self._conn.execute(
+            "SELECT value FROM app_state WHERE key = %s", (_REPLY_OFFSET_KEY,)
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def save_reply_offset(self, offset: int) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO app_state (key, value) VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value
+            """,
+            (_REPLY_OFFSET_KEY, str(offset)),
+        )

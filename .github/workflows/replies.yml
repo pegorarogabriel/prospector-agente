@@ -1,0 +1,45 @@
+name: Respostas do Telegram
+
+# Lê meus ✓/✗ e grava no banco (docs/arquitetura.md seção 8).
+# O Telegram guarda as atualizações por até 24h; a cada 2h sobra folga mesmo
+# com o atraso do cron do Actions.
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+# Duas leituras ao mesmo tempo pegariam as mesmas atualizações. Não perderiam
+# nada (gravar é "insere se não existe"), mas confirmariam no celular duas vezes.
+concurrency:
+  group: replies
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  respostas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Instala o uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Instala as dependências
+        run: uv sync --no-dev
+
+      - name: Aplica migrações pendentes
+        run: uv run prospector db migrate
+
+      - name: Ingere as respostas
+        run: uv run prospector ingest-replies --summary

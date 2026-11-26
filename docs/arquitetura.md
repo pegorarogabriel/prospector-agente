@@ -246,16 +246,46 @@ O orçamento é uma **trava em código**. O agente decide como distribuir, nunca
 ```
 Novo post aprovado
 "Procuro agregado com truck pra rota Guarulhos–Campinas..."
-Local: Guarulhos · há 3h · receita: agregado truck
+
+Guarulhos → Campinas · há 3h · receita: agregado truck
 Por que aprovei: truck, dentro da região, carga seca
-[Abrir post]
-[✓ Certo] [✗ Fora da região] [✗ Não é oportunidade] [✗ Outro]
+Abrir post                       (link no texto)
+[✓ Certo]
+[✗ Fora da região]
+[✗ Não é oportunidade]
+[✗ Veículo não serve]
+[✗ Outro (responda com o motivo)]
 ```
 
-- Os botões de ✗ mostram os 3 motivos mais frequentes das últimas semanas + "Outro".
-- Para "Outro", eu respondo (reply) à mensagem com o motivo em texto.
-- **Recebimento:** sem servidor. A rotina de respostas usa `getUpdates` a cada 2h (o Telegram guarda atualizações por até 24h).
+- Os botões de ✗ mostram os 3 motivos mais frequentes das últimas 4 semanas (só respostas a posts aprovados). Enquanto não houver 3, completam com "Fora da região", "Não é oportunidade" e "Veículo não serve". A lista oferecida fica gravada com a mensagem (`notifications.reject_reasons`): o botão carrega só o índice (`w0`, `w1`, `w2`), e o motivo é o que estava na tela, mesmo que a lista mude depois.
+- O link do post vai no texto, não num botão: depois que a resposta é gravada, os botões viram um só, inerte ("Registrado: ✗ Fora da região"), e o link continua lá.
+- Post com imagem mostra a imagem na prévia do link. Sem imagem, a prévia fica desligada (a do Facebook é a tela de login).
+- O envio acontece depois que a coleta foi gravada: se o Telegram falhar, posts e gasto não se perdem. Um envio que falha não impede os outros.
+
+### Como uma resposta vira `Feedback`
+
+| O que eu faço | O que é gravado |
+|---|---|
+| Toco ✓ | Acertou |
+| Toco ✗ com motivo | Errou, com aquele motivo |
+| Toco "Outro" | Nada ainda: espera o motivo |
+| Respondo (reply) à mensagem com texto | Errou, com o texto como motivo. Se eu também toquei ✓, é acerto, e o texto vira o motivo do acerto ("rota boa") |
+| Toco mais de um botão antes da leitura | Vale o último (corrigi um toque errado) |
+| Respondo de novo depois que a resposta foi gravada | Ignorado. Vale a primeira resposta gravada, e o celular mostra essa |
+
+As regras moram em `core/notification.py`, sem Telegram, com testes. Só conta o que vem do meu chat (`TELEGRAM_CHAT_ID`): qualquer pessoa pode achar o bot e mandar mensagem.
+
+### Recebimento
+
+- **Sem servidor.** A rotina de respostas usa `getUpdates` a cada 2h. O Telegram guarda atualizações por até 24h. O bot não pode ter webhook configurado, senão o `getUpdates` é recusado.
+- **Consequência:** o toque no botão não tem reação imediata; a confirmação ("Registrado: ...") aparece na próxima leitura, em até ~2h.
+- **Offset no banco** (`app_state`), gravado na mesma transação das respostas. O Telegram só descarta uma atualização quando a leitura seguinte pede um offset depois dela. Se a gravação falhar, a próxima rodada lê tudo de novo, e gravar duas vezes não duplica (`UNIQUE (post_id, source)`).
+- A confirmação no celular só acontece depois do commit. Senão o celular diria "registrado" sobre algo que o banco desfez.
 - Melhoria futura: webhook num Cloudflare Worker, pra resposta instantânea.
+
+### Privacidade nos logs
+
+O repositório é público, e o log do GitHub Actions também. Nos workflows, `collect` e `ingest-replies` rodam com `--summary`: só números, nenhum texto de post. O token do bot vai na URL da Bot API, então todo erro de rede é traduzido sem a URL antes de subir.
 
 ## 9. Arquitetura de código (arquitetura limpa)
 
@@ -270,13 +300,15 @@ src/prospector/
 │   ├── budget.py        cálculo do orçamento diário
 │   ├── rules.py         regras determinísticas da triagem
 │   ├── triage.py        regras do juiz, exemplos few-shot e a escolha deles
+│   ├── notification.py  botões de motivo e como uma resposta vira Feedback
 │   ├── region.py        cidades conhecidas e raio a partir da base
 │   └── text.py          normalização de texto
 ├── flows/           casos de uso: o que o sistema faz
 │   ├── ports.py         interfaces: Repository, LegacySource, SearchProvider, Judge, Messenger
 │   ├── collect.py       coleta e triagem diária
 │   ├── backtest.py      mede regras e juiz contra as minhas respostas
-│   ├── ingest_replies.py
+│   ├── notify.py        manda os aprovados pro Telegram e grava cada mensagem
+│   ├── ingest_replies.py lê meus ✓/✗, grava as respostas e o offset
 │   └── import_legacy.py
 ├── agent/           o agente semanal
 │   ├── graph.py
@@ -285,11 +317,11 @@ src/prospector/
 │   └── tools.py         tools chamam os flows, nunca as integrações direto
 └── integrations/    implementações concretas das portas
     ├── apify.py         SearchProvider sobre o actor do Apify
-    ├── fakes.py         busca com posts de exemplo e juiz falso (dry-run e testes)
+    ├── fakes.py         busca, juiz e Telegram falsos (dry-run e testes)
     ├── samples/         posts de exemplo, inventados, no formato do Apify
-    ├── telegram.py
+    ├── telegram.py      Messenger sobre a Bot API (sendMessage, getUpdates)
     ├── postgres.py      Repository sobre Postgres + migrador
-    ├── sql/             migrações numeradas (001_initial, 002_search_runs, 003_triage_rules, ...)
+    ├── sql/             migrações numeradas (001_initial, 002_search_runs, 003_triage_rules, 005_notifications, ...)
     ├── memory.py        Repository em memória: fake dos testes e do --dry-run
     ├── legacy_sqlite.py LegacySource sobre o prospector.db antigo
     └── llm.py           juiz: Claude via SDK oficial da Anthropic (saída estruturada)
@@ -322,12 +354,17 @@ src/prospector/
 
 | Arquivo | Quando (BRT) | Faz |
 |---|---|---|
-| `collect.yml` | Todo dia, 7h | Coleta e triagem |
-| `replies.yml` | A cada 2h | Ingere respostas; retoma o grafo semanal se a auditoria foi respondida |
+| `collect.yml` | Todo dia, 7h | Coleta, triagem e envio dos aprovados |
+| `replies.yml` | A cada 2h | Ingere respostas (etapa 6: retoma o grafo semanal se a auditoria foi respondida) |
 | `weekly.yml` | Domingo, 10h | Inicia o agente semanal |
 | `ci.yml` | Todo PR | Lint + testes |
 
 Cron do Actions é em UTC (BRT + 3h) e pode atrasar alguns minutos.
+
+- **Secrets** usados pelos workflows: `DATABASE_URL` (pooler), `APIFY_TOKEN`, `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- Cada workflow aplica as migrações pendentes antes de rodar (`prospector db migrate` não faz nada quando o banco está em dia).
+- `concurrency` impede duas coletas ao mesmo tempo, que leriam o mesmo gasto do mês e poderiam passar juntas do teto.
+- O GitHub desliga os agendamentos de um repositório público depois de 60 dias sem commit. Se a coleta parar sozinha, é isso: reative em Actions.
 
 ## 11. Histórico do FacebookProspector
 
