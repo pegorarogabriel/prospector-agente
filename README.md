@@ -51,6 +51,7 @@ uv run prospector collect --dry-run --live --limit 5          # Apify e juiz de 
 uv run prospector collect                                     # coleta real: grava tudo e manda os aprovados pro Telegram
 uv run prospector backtest --dry-run                          # backtest com juiz falso (sem custo)
 uv run prospector backtest --limit 10                         # backtest com o juiz real numa amostra
+uv run prospector storage check                               # confere o bucket de imagens (grava, lê e apaga um teste)
 uv run prospector telegram chats                              # acha o TELEGRAM_CHAT_ID (mande um "oi" pro bot antes)
 uv run prospector telegram ping                               # mensagem de teste no celular
 uv run prospector ingest-replies --dry-run                    # mostra meus ✓/✗ pendentes, sem gravar

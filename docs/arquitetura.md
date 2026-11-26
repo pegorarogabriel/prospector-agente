@@ -156,7 +156,12 @@ Muita oportunidade é postada só como imagem: um flyer, um print com o WhatsApp
 - O Apify traz, em cada imagem, o texto alternativo que o Facebook gera (`accessibilityCaption`: "May be an image of text that says '…'"). A coleta junta ao texto do post **só a transcrição entre aspas**. A descrição genérica fica de fora: é inglês e confundiria a regra de idioma.
 - As regras determinísticas que dependem de texto (região, palavras de venda) não descartam um post só porque não acharam texto. Na dúvida, quem decide é o juiz.
 - O juiz recebe a imagem junto do texto (o modelo é multimodal).
-- A URL de imagem do Facebook expira em poucos dias. O juiz precisa julgar no dia da coleta, o que já acontece. Para backtest e few-shot com imagem, a coleta guarda uma cópia da imagem (etapa 4, junto com o juiz).
+- A URL de imagem do Facebook expira em poucos dias. O juiz julga no dia da coleta, com a URL original. Para o backtest e o agente semanal reverem o post depois, **a coleta guarda uma cópia da imagem** no Supabase Storage:
+  - bucket `post-images`, **privado** (as imagens têm nome e telefone); o caminho fica em `posts.image_path` (`AAAA/MM/<id>.<ext>`, separado por mês para dar para apagar o que é velho);
+  - só dos posts que foram ao juiz: os barrados pelas regras são lixo claro, e o plano grátis tem 1 GB. Com ~30 posts por dia e uns 200 KB por imagem, são poucos MB por mês;
+  - imagem que não baixa, não é imagem ou passa de 5 MB fica sem cópia, e a coleta segue;
+  - o backtest troca a URL expirada por um link assinado da cópia (vale 1 h). Post só de imagem **com** cópia passa a ser medido; sem cópia continua pulado;
+  - chave secreta (`sb_secret_...`) só no `.env` e nos Secrets. `prospector storage check` confere chave e bucket e testa gravar, ler e apagar.
 
 ### Prompt do juiz
 
@@ -304,7 +309,7 @@ src/prospector/
 │   ├── region.py        cidades conhecidas e raio a partir da base
 │   └── text.py          normalização de texto
 ├── flows/           casos de uso: o que o sistema faz
-│   ├── ports.py         interfaces: Repository, LegacySource, SearchProvider, Judge, Messenger
+│   ├── ports.py         interfaces: Repository, LegacySource, SearchProvider, Judge, Messenger, ImageStore
 │   ├── collect.py       coleta e triagem diária
 │   ├── backtest.py      mede regras e juiz contra as minhas respostas
 │   ├── notify.py        manda os aprovados pro Telegram e grava cada mensagem
@@ -320,6 +325,7 @@ src/prospector/
     ├── fakes.py         busca, juiz e Telegram falsos (dry-run e testes)
     ├── samples/         posts de exemplo, inventados, no formato do Apify
     ├── telegram.py      Messenger sobre a Bot API (sendMessage, getUpdates)
+    ├── supabase_storage.py ImageStore: cópia das imagens no bucket privado
     ├── postgres.py      Repository sobre Postgres + migrador
     ├── sql/             migrações numeradas (001_initial, 002_search_runs, 003_triage_rules, 005_notifications, ...)
     ├── memory.py        Repository em memória: fake dos testes e do --dry-run
@@ -341,6 +347,7 @@ src/prospector/
 |---|---|---|
 | Execução | GitHub Actions | Gratuito e ilimitado em repositório público |
 | Banco | PostgreSQL no Supabase (free) | Actions não tem disco permanente; LangGraph tem `PostgresSaver` pronto |
+| Imagens | Supabase Storage (free, 1 GB), bucket privado | Mesmo projeto do banco; a URL do Facebook expira |
 | Segredos | GitHub Secrets | Nunca no código |
 
 **Banco:**
@@ -361,7 +368,7 @@ src/prospector/
 
 Cron do Actions é em UTC (BRT + 3h) e pode atrasar alguns minutos.
 
-- **Secrets** usados pelos workflows: `DATABASE_URL` (pooler), `APIFY_TOKEN`, `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- **Secrets** usados pelos workflows: `DATABASE_URL` (pooler), `APIFY_TOKEN`, `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`.
 - Cada workflow aplica as migrações pendentes antes de rodar (`prospector db migrate` não faz nada quando o banco está em dia).
 - `concurrency` impede duas coletas ao mesmo tempo, que leriam o mesmo gasto do mês e poderiam passar juntas do teto.
 - O GitHub desliga os agendamentos de um repositório público depois de 60 dias sem commit. Se a coleta parar sozinha, é isso: reative em Actions.
