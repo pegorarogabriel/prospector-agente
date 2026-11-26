@@ -30,6 +30,9 @@ class Post:
     location: str | None = None
     recipe_ids: frozenset[str] = field(default_factory=frozenset)
     image_url: str | None = None
+    image_path: str | None = None
+    """Onde está a cópia da imagem no nosso armazenamento. A `image_url` do
+    Facebook expira em poucos dias; a cópia é o que o backtest usa depois."""
 
     @property
     def has_content(self) -> bool:
