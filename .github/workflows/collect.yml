@@ -1,0 +1,48 @@
+name: Coleta diária
+
+# Coleta, triagem e envio dos aprovados ao Telegram (docs/arquitetura.md seções 2 e 10).
+on:
+  schedule:
+    - cron: "0 10 * * *" # 7h em Brasília (cron do Actions é UTC e pode atrasar uns minutos)
+  workflow_dispatch: # botão "Run workflow", para testar sem esperar o horário
+
+# Nunca duas coletas ao mesmo tempo: as duas leriam o mesmo gasto do mês e
+# poderiam passar juntas do teto.
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  coleta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Pooler do Supabase em modo sessão: o Actions não tem IPv6 (seção 10).
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Instala o uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Instala as dependências
+        run: uv sync --no-dev
+
+      - name: Aplica migrações pendentes
+        run: uv run prospector db migrate
+
+      # --summary: o log de um repositório público é público, e os posts têm
+      # nome e telefone de gente real. Só números aparecem aqui.
+      - name: Coleta, julga e envia
+        run: uv run prospector collect --summary
