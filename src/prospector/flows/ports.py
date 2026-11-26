@@ -10,10 +10,11 @@ Ver `docs/arquitetura.md` seção 9.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from prospector.core.feedback import Feedback
+from prospector.core.notification import Notification, Reply
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe
 from prospector.core.rules import RuleVerdict
@@ -103,6 +104,24 @@ class Repository(Protocol):
         """Resultados cobrados pelo Apify desde `moment` (o 1º dia do mês, na trava)."""
         ...
 
+    def add_notifications(self, notifications: Sequence[Notification]) -> int:
+        """Registra mensagens enviadas. Uma por (chat, mensagem)."""
+        ...
+
+    def find_notifications(
+        self, chat_id: int, message_ids: Sequence[int]
+    ) -> dict[int, Notification]:
+        """As notificações destas mensagens, por `message_id`. As desconhecidas ficam de fora."""
+        ...
+
+    def reply_offset(self) -> int | None:
+        """Até onde as atualizações do Telegram já foram lidas (o próximo `update_id`)."""
+        ...
+
+    def save_reply_offset(self, offset: int) -> None:
+        """Guarda o próximo `update_id`. Entra na mesma transação das respostas."""
+        ...
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -126,6 +145,49 @@ class Judge(Protocol):
     """A camada 2 da triagem: lê o post que passou nas regras e decide."""
 
     def judge(self, post: Post, verdict: RuleVerdict) -> TriageResult: ...
+
+
+@dataclass(frozen=True)
+class PostMessage:
+    """O que vai na mensagem de um post aprovado (seção 8). Quem desenha é a integração."""
+
+    post: Post
+    result: TriageResult
+    queries: tuple[str, ...]
+    """Os termos das receitas que trouxeram o post."""
+
+    age: timedelta
+    reject_reasons: tuple[str, ...]
+    """Os motivos de ✗ que viram botão, nesta ordem."""
+
+
+@dataclass(frozen=True)
+class SentMessage:
+    chat_id: int
+    message_id: int
+
+
+@dataclass(frozen=True)
+class ReplyBatch:
+    """As respostas lidas numa rodada, e de onde ler na próxima."""
+
+    replies: list[Reply]
+    next_offset: int | None
+    """O `update_id` seguinte ao último lido, inclusive os ignorados. `None` se não veio nada."""
+
+
+class Messenger(Protocol):
+    """A ponte com o celular: o bot do Telegram, ou um fake nos testes."""
+
+    def send_post(self, message: PostMessage) -> SentMessage: ...
+
+    def fetch_replies(self, offset: int | None) -> ReplyBatch:
+        """Botões e replies desde `offset`, só do meu chat. Não confirma nada sozinho."""
+        ...
+
+    def confirm(self, chat_id: int, message_id: int, label: str) -> None:
+        """Troca os botões da mensagem por um só, inerte, com o que foi gravado."""
+        ...
 
 
 @dataclass(frozen=True)

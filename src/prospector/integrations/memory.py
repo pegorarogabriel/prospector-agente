@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from prospector.core.feedback import Feedback
+from prospector.core.notification import Notification
 from prospector.core.post import Post
 from prospector.core.recipe import Recipe
 from prospector.core.triage import TriageRule
@@ -26,6 +27,8 @@ class InMemoryRepository:
         self._feedback: dict[tuple[str, str], Feedback] = {}
         self._search_runs: list[SearchRun] = []
         self._rules: dict[str, TriageRule] = {}
+        self._notifications: dict[tuple[int, int], Notification] = {}
+        self._reply_offset: int | None = None
 
     def add_recipes(self, recipes: Sequence[Recipe]) -> int:
         added = 0
@@ -103,3 +106,27 @@ class InMemoryRepository:
             if post is not None and decision is not None:
                 labeled.append(LabeledPost(post, decision.result, answer))
         return labeled
+
+    def add_notifications(self, notifications: Sequence[Notification]) -> int:
+        added = 0
+        for item in notifications:
+            key = (item.chat_id, item.message_id)
+            if key not in self._notifications:
+                self._notifications[key] = item
+                added += 1
+        return added
+
+    def find_notifications(
+        self, chat_id: int, message_ids: Sequence[int]
+    ) -> dict[int, Notification]:
+        return {
+            message_id: self._notifications[(chat_id, message_id)]
+            for message_id in message_ids
+            if (chat_id, message_id) in self._notifications
+        }
+
+    def reply_offset(self) -> int | None:
+        return self._reply_offset
+
+    def save_reply_offset(self, offset: int) -> None:
+        self._reply_offset = offset

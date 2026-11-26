@@ -173,3 +173,30 @@ def test_labeled_posts_need_a_decision_and_an_answer(repository):
     assert item.post == POST
     assert item.decision == DECISION.result
     assert item.feedback == ANSWER
+
+
+def test_notifications_round_trip_by_chat_and_message(repository):
+    from prospector.core.notification import Notification
+
+    repository.add_recipes([RECIPE, CHILD])
+    repository.add_posts([POST])
+    sent = Notification(
+        chat_id=-1001,
+        message_id=7,
+        post_id="p1",
+        source=FeedbackSource.NOTIFICATION,
+        sent_at=WHEN,
+        reject_reasons=("Fora da região", "Não é oportunidade"),
+    )
+    assert repository.add_notifications([sent]) == 1
+    assert repository.add_notifications([sent]) == 0
+    assert repository.find_notifications(-1001, [7, 8]) == {7: sent}
+    assert repository.find_notifications(-1002, [7]) == {}
+    assert repository.find_notifications(-1001, []) == {}
+
+
+def test_reply_offset_starts_empty_and_is_overwritten(repository):
+    assert repository.reply_offset() is None
+    repository.save_reply_offset(10)
+    repository.save_reply_offset(15)
+    assert repository.reply_offset() == 15
