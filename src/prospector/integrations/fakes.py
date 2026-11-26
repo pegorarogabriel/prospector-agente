@@ -1,7 +1,8 @@
-"""Implementações falsas das portas `SearchProvider` e `Judge`.
+"""Implementações falsas das portas `SearchProvider`, `Judge` e `Messenger`.
 
 Servem aos testes e ao `prospector collect --dry-run`: o caminho inteiro da
-coleta roda sem gastar crédito do Apify nem chamar LLM.
+coleta roda sem gastar crédito do Apify, sem chamar LLM e sem mandar nada pro
+celular.
 
 Os posts de exemplo (`samples/posts.json`) são inventados, no formato real do
 actor, e cobrem cada caminho das regras: oferta boa, só imagem, venda,
@@ -16,9 +17,10 @@ from datetime import datetime, timedelta
 from importlib import resources
 from typing import Any
 
+from prospector.core.notification import Reply
 from prospector.core.post import Post, TriageResult
 from prospector.core.rules import RuleVerdict
-from prospector.flows.ports import SearchResult
+from prospector.flows.ports import PostMessage, ReplyBatch, SearchResult, SentMessage
 from prospector.integrations.apify import parse_item
 
 
@@ -79,3 +81,36 @@ class FakeJudge:
             origin=verdict.region.origin,
             destination=verdict.region.destination,
         )
+
+
+class FakeMessenger:
+    """Guarda o que seria enviado e devolve respostas pré-definidas.
+
+    Imita o `getUpdates`: `fetch_replies(offset)` devolve só as respostas com
+    `update_id >= offset`, como o Telegram faz depois de confirmar as antigas.
+    """
+
+    def __init__(self, *, chat_id: int = 1, first_message_id: int = 100) -> None:
+        self.chat_id = chat_id
+        self.sent: list[tuple[SentMessage, PostMessage]] = []
+        self.replies: list[Reply] = []
+        self.confirmed: list[tuple[int, int, str]] = []
+        self.fail_for: set[str] = set()
+        """Ids de post cujo envio deve falhar (para testar o erro isolado)."""
+        self._next_id = first_message_id
+
+    def send_post(self, message: PostMessage) -> SentMessage:
+        if message.post.id in self.fail_for:
+            raise RuntimeError("envio falso falhou")
+        sent = SentMessage(self.chat_id, self._next_id)
+        self._next_id += 1
+        self.sent.append((sent, message))
+        return sent
+
+    def fetch_replies(self, offset: int | None) -> ReplyBatch:
+        fresh = [r for r in self.replies if offset is None or r.update_id >= offset]
+        last = max((r.update_id for r in fresh), default=None)
+        return ReplyBatch(replies=fresh, next_offset=None if last is None else last + 1)
+
+    def confirm(self, chat_id: int, message_id: int, label: str) -> None:
+        self.confirmed.append((chat_id, message_id, label))
