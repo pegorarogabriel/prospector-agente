@@ -4,8 +4,13 @@ Portado de `app/services/location_service.py` do FacebookProspector. A lista de
 cidades é a mesma; o que mudou é que a base e o raio entram por parâmetro em vez
 de virem de `settings` — o `core` não lê configuração.
 
-O "raio" é linha reta (haversine), não distância rodoviária. É grosseiro de
-propósito: a regra só derruba o que está claramente fora. Na dúvida (nenhuma
+A operação sai de Guarulhos e volta para Guarulhos (`docs/arquitetura.md`
+seção 1): a **origem** precisa ser perto da base, o destino pode ser longe
+dentro de SP. Como a regra não sabe qual cidade do texto é a origem, ela usa
+uma aproximação: o post passa se **alguma** cidade citada estiver no raio
+("Guarulhos x Campinas" passa; "operação em Sorocaba" cai).
+
+O raio é linha reta (haversine), não distância rodoviária. Na dúvida (nenhuma
 cidade reconhecida, que é a maioria dos posts), o post segue para o juiz.
 """
 
@@ -17,8 +22,10 @@ from functools import cache
 
 from prospector.core.text import normalize_text
 
-#: Raio de atuação padrão a partir da base, em km.
-MAX_DISTANCE_KM = 100.0
+#: Até onde pode ficar a origem da operação, em km da base. Era 100 no projeto
+#: antigo, o que deixava passar Sorocaba e Sumaré: não compensa deslocar o
+#: caminhão para operar lá.
+MAX_DISTANCE_KM = 30.0
 
 #: Cidade base padrão (precisa estar em `CITIES`).
 HOME_BASE = "guarulhos"
@@ -289,10 +296,10 @@ CITIES_OUTSIDE_SP: frozenset[str] = frozenset(
 
 class RegionStatus(StrEnum):
     INSIDE = "inside"
-    """Citou pelo menos uma cidade dentro do raio, e nada de outro estado."""
+    """Citou pelo menos uma cidade perto da base, e nada de outro estado."""
 
     OUTSIDE = "outside"
-    """Viagem para outro estado, ou só cidades fora do raio."""
+    """Viagem para outro estado, ou só cidades longe da base."""
 
     UNKNOWN = "unknown"
     """Nenhuma cidade reconhecida. É a maioria dos posts, e eles seguem adiante."""
@@ -319,8 +326,11 @@ _STATE_OUTSIDE_SP = re.compile(
 )
 
 # UF de outro estado logo depois de uma cidade: "santa vitoria/mg", "contagem - mg".
+# O antigo aceitava qualquer separador, e "se" virava Sergipe em português comum:
+# "caminhão, se você..." (vírgula) e "cadastre-se", "precisa-se" (hífen colado).
+# Agora: barra, ou hífen com espaço de algum lado.
 _UF_OUTSIDE_SP = re.compile(
-    r"[a-z]{2,}\s*[/\-,]\s*"
+    r"[a-z]{2,}(?:\s*/\s*|\s+-\s*|\s*-\s+)"
     r"(mg|rj|es|pr|sc|rs|rn|ba|go|ms|mt|df|pe|ce|ma|pb|al|se|pi|to|ro|ac|am|ap|rr)\b"
 )
 
@@ -416,6 +426,6 @@ def analyze_region(
         detail = ", ".join(f"{city} ({km}km)" for city, km in inside)
         return RegionVerdict(RegionStatus.INSIDE, detail, origin, destination)
     if outside:
-        detail = "fora do raio: " + ", ".join(f"{city} ({km}km)" for city, km in outside)
+        detail = "longe da base: " + ", ".join(f"{city} ({km}km)" for city, km in outside)
         return RegionVerdict(RegionStatus.OUTSIDE, detail, origin, destination)
     return RegionVerdict(RegionStatus.UNKNOWN)

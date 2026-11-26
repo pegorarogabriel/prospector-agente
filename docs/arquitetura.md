@@ -14,6 +14,18 @@ O FacebookProspector coletava muitos posts e a maioria era lixo (venda de caminh
 
 **Meu papel:** revisor do resultado do agente, não triador.
 
+### A operação (o que define "oportunidade")
+
+Uma transportadora com caminhões **truck e toco, com baú**, baseada em **Guarulhos (SP)**. O que ela procura é empresa que queira agregar esses caminhões, ou que tenha carga para eles.
+
+**A limitação que manda em tudo: o caminhão sai da base e volta para a base.** Não compensa deslocar o caminhão para operar em outra cidade, mesmo perto. Por isso:
+
+- **a origem** (onde o caminhão carrega ou se apresenta) precisa ficar a **até ~30 km de Guarulhos**: Guarulhos, Arujá, Itaquaquecetuba, Poá, Mairiporã, as zonas Norte e Leste de São Paulo; em linha reta, isso inclui a capital, o ABC e Osasco. Uma operação baseada em Sorocaba, Campinas, Sumaré, Jundiaí ou Mogi não serve, mesmo a menos de 100 km;
+- **o destino** pode ser longe, **desde que dentro do estado de SP**: sair de Guarulhos e entregar em Campinas, voltando, serve;
+- **fora do estado de SP** não serve.
+
+Esse contexto vai nas regras fixas (seção 5, região), nas regras do juiz (`triage_rules`) e no papel do juiz (`integrations/llm.py`).
+
 ## 2. Visão geral
 
 Duas rotinas e uma ponte com o celular:
@@ -120,7 +132,7 @@ Duas camadas, nessa ordem:
    4. idioma estrangeiro ("agregado" em espanhol é "adicionado");
    5. sem sinal de frete, só quando há texto e **não** há imagem;
    6. venda, financiamento, curso, oficina, proteção veicular, plataforma de cotação (com exceção para quem também fala de agregamento, menos anúncio de veículo);
-   7. região (`core/region.py`): outro estado, ou só cidades fora do raio de 100 km de `HOME_BASE`. Sem cidade reconhecida, segue.
+   7. região (`core/region.py`): outro estado, ou **nenhuma** cidade citada a até 30 km de `HOME_BASE` (seção 1: a origem precisa ser perto; o destino pode ser longe). "Guarulhos x Campinas" passa, porque Guarulhos está no raio; "operação em Sorocaba" cai. Sem cidade reconhecida, segue. É uma aproximação: a regra não sabe qual cidade é a origem. Um post que só cita o destino ("entrega em Campinas") cai, e isso é aceito porque a origem desconhecida raramente é Guarulhos.
 
    "Motorista se oferecendo" não é filtro: vira um sinal para o juiz. Duplicados são resolvidos antes das regras, pelo id do post.
 2. **Juiz LLM:** lê o post (texto **e imagem**) e devolve saída estruturada:
@@ -148,9 +160,16 @@ Muita oportunidade é postada só como imagem: um flyer, um print com o WhatsApp
 
 ### Prompt do juiz
 
-O prompt do juiz é montado a partir de:
-- **Regras de triagem** em linguagem natural, versionadas no banco (tabela `triage_rules`). São elas que o agente semanal ajusta.
-- **Exemplos reais** (few-shot): meus acertos e erros mais recentes, com motivo.
+O prompt do juiz (`integrations/llm.py`) é montado a partir de:
+- **Regras de triagem** em linguagem natural, versionadas no banco (tabela `triage_rules`). São elas que o agente semanal ajusta. As 7 regras iniciais (`created_by = seed`) foram escritas a partir dos motivos das minhas 124 respostas no FacebookProspector.
+- **Exemplos reais** (few-shot): 4 "chamei" e 8 "não chamei" mais recentes. Equilibrados, porque no histórico há 105 "não chamei" para 19 "chamei": na proporção real, o juiz aprenderia que quase tudo é ruim. Nos "chamei" sem motivo, o motivo é "eu chamei".
+- **Sinais das regras fixas**: veículo, carroceria, região, oferta mista e "parece motorista se oferecendo".
+
+**Motorista se oferecendo é reprovação.** O antigo só marcava; minhas respostas mostram que eu nunca chamei ("procurando trampo", "quer trampo"). O interesse é em quem tem carga.
+
+**Como o juiz é chamado:** SDK oficial da Anthropic, `messages.parse` com o formato da resposta definido em Pydantic (`approved`, `score`, `reason`, `vehicle`, `origin`, `destination`). É uma chamada só, sem ferramentas: não precisa de LangChain. O `system` (papel, regras, exemplos) é estável e vai com `cache_control`; do segundo post do dia em diante, ele é lido do cache a um décimo do preço. A imagem vai por URL, antes do texto; se ela não carregar, o juiz tenta de novo só com o texto. Recusa ou erro da API viram reprovação com o motivo "juiz indisponível", e a coleta segue.
+
+**Backtest** (`prospector backtest`): regras e juiz contra as minhas respostas, com o gabarito "eu teria chamado?". Mede três recortes: as regras sozinhas, o juiz nos posts que passaram nas regras, e as duas camadas juntas. Os posts usados como exemplo ficam fora da medição. Posts só de imagem do histórico são pulados, porque as URLs antigas expiraram.
 
 Os aprovados do dia são ordenados por `score` e enviados ao Telegram. Teto: `MAX_DAILY_NOTIFICATIONS = 3`.
 
@@ -250,11 +269,13 @@ src/prospector/
 │   ├── bandit.py        Thompson Sampling, decay, aposentadoria
 │   ├── budget.py        cálculo do orçamento diário
 │   ├── rules.py         regras determinísticas da triagem
+│   ├── triage.py        regras do juiz, exemplos few-shot e a escolha deles
 │   ├── region.py        cidades conhecidas e raio a partir da base
 │   └── text.py          normalização de texto
 ├── flows/           casos de uso: o que o sistema faz
 │   ├── ports.py         interfaces: Repository, LegacySource, SearchProvider, Judge, Messenger
 │   ├── collect.py       coleta e triagem diária
+│   ├── backtest.py      mede regras e juiz contra as minhas respostas
 │   ├── ingest_replies.py
 │   └── import_legacy.py
 ├── agent/           o agente semanal
@@ -268,10 +289,10 @@ src/prospector/
     ├── samples/         posts de exemplo, inventados, no formato do Apify
     ├── telegram.py
     ├── postgres.py      Repository sobre Postgres + migrador
-    ├── sql/             migrações numeradas (001_initial.sql, 002_search_runs.sql, ...)
+    ├── sql/             migrações numeradas (001_initial, 002_search_runs, 003_triage_rules, ...)
     ├── memory.py        Repository em memória: fake dos testes e do --dry-run
     ├── legacy_sqlite.py LegacySource sobre o prospector.db antigo
-    └── llm.py           Claude via langchain-anthropic
+    └── llm.py           juiz: Claude via SDK oficial da Anthropic (saída estruturada)
 ```
 
 **Regra de dependência:** `integrations → flows → core`. O `core` não importa nada de fora. Por isso o bandit e o orçamento são testáveis em milissegundos, sem internet.
@@ -280,7 +301,7 @@ src/prospector/
 
 **Fakes honestos:** toda porta tem uma implementação fake. A do `Repository` passa pelos mesmos testes que a do Postgres (`tests/test_repository_contract.py`), para o fake não se comportar diferente do banco real.
 
-**Modelos:** um modelo pequeno e barato para o juiz diário; um modelo maior para o agente semanal.
+**Modelos:** `claude-haiku-5-5` para o juiz diário (pequeno e barato, `effort: low`); um modelo maior para o agente semanal. LangChain/LangGraph entram só no agente semanal (etapa 6), onde há grafo, ferramentas e pausa; o juiz usa o SDK oficial direto.
 
 ## 10. Infraestrutura
 

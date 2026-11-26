@@ -12,7 +12,8 @@ from datetime import datetime
 from prospector.core.feedback import Feedback
 from prospector.core.post import Post
 from prospector.core.recipe import Recipe
-from prospector.flows.ports import SearchRun, TriagedPost
+from prospector.core.triage import TriageRule
+from prospector.flows.ports import LabeledPost, SearchRun, TriagedPost
 
 
 class InMemoryRepository:
@@ -24,6 +25,7 @@ class InMemoryRepository:
         self._triage: dict[str, TriagedPost] = {}
         self._feedback: dict[tuple[str, str], Feedback] = {}
         self._search_runs: list[SearchRun] = []
+        self._rules: dict[str, TriageRule] = {}
 
     def add_recipes(self, recipes: Sequence[Recipe]) -> int:
         added = 0
@@ -81,3 +83,23 @@ class InMemoryRepository:
 
     def results_spent_since(self, moment: datetime) -> int:
         return sum(run.charged for run in self._search_runs if run.ran_at >= moment)
+
+    def add_triage_rules(self, rules: Sequence[TriageRule]) -> int:
+        added = 0
+        for rule in rules:
+            if rule.id not in self._rules:
+                self._rules[rule.id] = rule
+                added += 1
+        return added
+
+    def list_triage_rules(self) -> list[TriageRule]:
+        return sorted(self._rules.values(), key=lambda rule: rule.id)
+
+    def list_labeled_posts(self) -> list[LabeledPost]:
+        labeled = []
+        for answer in self.list_feedback():
+            post = self._posts.get(answer.post_id)
+            decision = self._triage.get(answer.post_id)
+            if post is not None and decision is not None:
+                labeled.append(LabeledPost(post, decision.result, answer))
+        return labeled

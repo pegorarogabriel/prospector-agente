@@ -13,6 +13,7 @@ import pytest
 from prospector.core.feedback import Feedback, FeedbackSource, Verdict
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe, RecipeOrigin, RecipeStatus
+from prospector.core.triage import TriageRule
 from prospector.flows.ports import Repository, SearchRun, TriagedPost
 from prospector.integrations.memory import InMemoryRepository
 
@@ -148,3 +149,27 @@ def test_search_runs_are_events_and_always_enter(repository):
     repository.add_search_runs([run])
     repository.add_search_runs([run])
     assert repository.results_spent_since(WHEN) == 10
+
+
+def test_triage_rules_round_trip(repository):
+    rules = [
+        TriageRule("b", "Reprove motorista se oferecendo.", created_by="seed"),
+        TriageRule("a", "Aprove empresa com carga.", active=False, created_by="manual"),
+    ]
+    assert repository.add_triage_rules(rules) == 2
+    assert repository.add_triage_rules(rules) == 0
+    # No Postgres, a migração já traz as regras iniciais: olha só as deste teste.
+    mine = [rule for rule in repository.list_triage_rules() if rule.id in {"a", "b"}]
+    assert mine == sorted(rules, key=lambda rule: rule.id)
+
+
+def test_labeled_posts_need_a_decision_and_an_answer(repository):
+    repository.add_recipes([RECIPE, CHILD])
+    unanswered = Post(id="p2", text="sem resposta", url="https://fb.com/2", posted_at=WHEN)
+    repository.add_posts([POST, unanswered])
+    repository.add_triage_results([DECISION, TriagedPost("p2", DECISION.result)])
+    repository.add_feedback([ANSWER])
+    [item] = repository.list_labeled_posts()
+    assert item.post == POST
+    assert item.decision == DECISION.result
+    assert item.feedback == ANSWER

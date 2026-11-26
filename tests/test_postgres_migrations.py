@@ -28,3 +28,13 @@ def test_every_table_has_row_level_security(postgres_conn):
     ).fetchall()
     assert rows
     assert all(secured for _, secured in rows), rows
+
+
+def test_initial_triage_rules_are_seeded(postgres_conn):
+    from prospector.integrations.postgres import PostgresRepository
+
+    migrate(postgres_conn)
+    rules = PostgresRepository(postgres_conn).list_triage_rules()
+    assert len(rules) == 7
+    assert all(rule.created_by == "seed" and rule.active for rule in rules)
+    assert any("motorista" in rule.text for rule in rules)
