@@ -117,6 +117,7 @@ def test_image_only_post_round_trips(repository):
         url="https://fb.com/2",
         posted_at=WHEN,
         image_url="https://fbcdn.net/flyer.jpg",
+        image_path="2026/11/p2.jpg",
         recipe_ids=frozenset({RECIPE.id}),
     )
     assert repository.add_posts([flyer]) == 1

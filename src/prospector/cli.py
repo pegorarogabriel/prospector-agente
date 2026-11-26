@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from prospector.flows.notify import NotifyReport
     from prospector.flows.ports import Judge, PostMessage, SearchProvider
     from prospector.integrations.llm import ClaudeJudge
+    from prospector.integrations.supabase_storage import SupabaseImageStore
     from prospector.integrations.telegram import TelegramMessenger
 
 
@@ -137,6 +138,32 @@ def _telegram() -> "TelegramMessenger":
     return TelegramMessenger(token, int(chat))
 
 
+def _image_store() -> "SupabaseImageStore":
+    """O Storage das cópias de imagem, com a chave e o bucket já conferidos."""
+    from prospector.integrations.supabase_storage import SupabaseImageStore
+
+    url = os.environ.get("SUPABASE_URL", "").strip()
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+    if not url or not key:
+        sys.exit("SUPABASE_URL e SUPABASE_SERVICE_KEY precisam estar no .env.")
+    if key.startswith("sb_publishable_"):
+        sys.exit(
+            "SUPABASE_SERVICE_KEY é a chave publicável (sb_publishable_...). Use a secreta "
+            "(sb_secret_...), em Project Settings → API Keys."
+        )
+    store = SupabaseImageStore(url, key)
+    problem = store.check()
+    if problem:
+        sys.exit(f"Storage: {problem}")
+    return store
+
+
+def _print_images(saved: int, failed: int, errors: list[str]) -> None:
+    print(f"Imagens copiadas para o Storage: {saved}, sem cópia: {failed}")
+    for error, count in sorted({e: errors.count(e) for e in errors}.items()):
+        print(f"  {count}x {error}")
+
+
 def _print_preview(messages: "list[PostMessage]") -> None:
     from prospector.integrations.telegram import render_post
 
@@ -216,6 +243,7 @@ def _cmd_collect(args: argparse.Namespace) -> None:
     real_search = not args.dry_run or args.live
     # Antes de gastar Apify e LLM: coleta real sem Telegram não chegaria em ninguém.
     messenger = _telegram() if not args.dry_run else None
+    images = _image_store() if not args.dry_run else None
     if not args.dry_run:
         print("[coleta real] Apify + juiz real; grava tudo e manda os aprovados.\n")
     elif args.live:
@@ -242,9 +270,12 @@ def _cmd_collect(args: argparse.Namespace) -> None:
             record_spend=real_search,
             write=not args.dry_run,
             test_limit=args.limit if args.live else None,
+            image_store=images,
         )
         _print_collect(report, queries, summary=args.summary)
         _print_usage(judge)
+        if images is not None:
+            _print_images(report.images_saved, report.images_failed, images.errors)
 
         if messenger is None:
             if not args.summary:
@@ -308,6 +339,15 @@ def _cmd_telegram_chats(_: argparse.Namespace) -> None:
         print(f"  {chat_id}  {name}")
 
 
+def _cmd_storage_check(_: argparse.Namespace) -> None:
+    store = _image_store()
+    print("Chave secreta e bucket privado 'post-images': ok")
+    problem = store.round_trip()
+    if problem:
+        sys.exit(f"Teste de gravação falhou: {problem}")
+    print("Gravar, gerar link e apagar um arquivo de teste: ok")
+
+
 def _cmd_telegram_ping(_: argparse.Namespace) -> None:
     _telegram().send_text("Prospector: teste de conexão. Se chegou, o bot está configurado.")
     print("Mensagem de teste enviada.")
@@ -323,8 +363,9 @@ def _print_backtest(report: "BacktestReport") -> None:
         f"Exemplos no prompt: {good} bons e {len(report.examples) - good} ruins (fora da medição)"
     )
     print(f"Posts medidos: {len(report.cases)}  ", end="")
-    print(f"(só imagem, pulados: {report.skipped_image_only}; ", end="")
-    print(f"fora da amostra: {report.skipped_by_limit})\n")
+    print(f"(só imagem sem cópia, pulados: {report.skipped_image_only}; ", end="")
+    print(f"fora da amostra: {report.skipped_by_limit}; ", end="")
+    print(f"julgados com a cópia da imagem: {report.stored_images})\n")
     print(f"{'':<14}{'acerto':>8}{'precisão':>10}{'recall':>8}    VP  FP  FN  VN")
     for label, confusion in (
         ("regras", report.rules),
@@ -365,6 +406,10 @@ def _cmd_backtest(args: argparse.Namespace) -> None:
 
     if args.dry_run:
         print("[dry-run] juiz falso: testa o encanamento, sem custo.\n")
+    # Com o Storage configurado, o juiz vê a cópia das imagens; sem ele, post
+    # só de imagem é pulado (a URL do Facebook já expirou).
+    configured = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+    images = _image_store() if configured and not args.dry_run else None
     built: list[object] = []
     with psycopg.connect(_database_url()) as conn:
         repository = PostgresRepository(conn)
@@ -374,7 +419,12 @@ def _cmd_backtest(args: argparse.Namespace) -> None:
             built.append(judge)
             return judge
 
-        report = run_backtest(repository.list_labeled_posts(), make_judge, limit=args.limit)
+        report = run_backtest(
+            repository.list_labeled_posts(),
+            make_judge,
+            image_link=images.link if images else None,
+            limit=args.limit,
+        )
     _print_backtest(report)
     print()
     if built:
@@ -478,6 +528,12 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_commands.add_parser("ping", help="manda uma mensagem de teste").set_defaults(
         handler=_cmd_telegram_ping
     )
+
+    storage = commands.add_parser("storage", help="cópia das imagens no Supabase Storage")
+    storage_commands = storage.add_subparsers(dest="storage_command", required=True)
+    storage_commands.add_parser(
+        "check", help="confere a chave e o bucket, e testa gravar, ler e apagar"
+    ).set_defaults(handler=_cmd_storage_check)
 
     backtest = commands.add_parser("backtest", help="mede o juiz contra as minhas respostas")
     backtest.add_argument(

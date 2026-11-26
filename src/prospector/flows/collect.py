@@ -9,7 +9,8 @@ isso é um script e não um agente:
 4. junção dos duplicados (o mesmo post achado por várias receitas conta para
    todas) e descarte do que já foi visto em coletas anteriores;
 5. regras determinísticas em tudo; juiz só no que sobrou;
-6. os aprovados com maior nota vão para o Telegram, até o teto diário.
+6. cópia da imagem dos posts que foram ao juiz (a URL do Facebook expira);
+7. os aprovados com maior nota vão para o Telegram, até o teto diário.
 
 Duas chaves controlam o que é gravado, para o mesmo código servir à coleta de
 verdade e aos dois modos de dry-run:
@@ -34,7 +35,14 @@ from prospector.core.budget import (
 from prospector.core.post import Post, TriageResult
 from prospector.core.region import HOME_BASE, MAX_DISTANCE_KM
 from prospector.core.rules import MAX_POST_AGE, RuleVerdict, apply_rules
-from prospector.flows.ports import Judge, Repository, SearchProvider, SearchRun, TriagedPost
+from prospector.flows.ports import (
+    ImageStore,
+    Judge,
+    Repository,
+    SearchProvider,
+    SearchRun,
+    TriagedPost,
+)
 
 #: Quantos aprovados por dia vão para o Telegram (seção 5).
 MAX_DAILY_NOTIFICATIONS = 3
@@ -99,6 +107,8 @@ class CollectReport:
     to_notify: list[Decision]
     recorded_spend: bool
     wrote: bool
+    images_saved: int = 0
+    images_failed: int = 0
 
     @property
     def charged(self) -> int:
@@ -131,12 +141,17 @@ def collect(
     record_spend: bool,
     write: bool,
     test_limit: int | None = None,
+    image_store: ImageStore | None = None,
 ) -> CollectReport:
     """Roda uma coleta. Ver o docstring do módulo para a sequência.
 
     `test_limit` é o teste `--live` do dry-run: uma busca só, com poucos
     resultados, para a receita que o sorteio escolher. Continua passando pela
     trava de orçamento.
+
+    `image_store`, com `write`, guarda a cópia da imagem dos posts que foram ao
+    juiz. Só desses: os barrados pelas regras são lixo claro, e o plano grátis
+    do Storage tem 1 GB.
     """
     spent = repository.results_spent_since(_month_start(now))
     spent_before = spent
@@ -193,6 +208,10 @@ def collect(
         result = judge.judge(post, verdict) if verdict.keep else _rejected(verdict)
         decisions.append(Decision(post, verdict, result))
 
+    saved = failed = 0
+    if write and image_store is not None:
+        decisions, saved, failed = _store_images(image_store, decisions)
+
     approved = sorted(
         (decision for decision in decisions if decision.result.approved),
         key=lambda decision: decision.result.score,
@@ -215,7 +234,27 @@ def collect(
         to_notify=approved[: settings.max_notifications],
         recorded_spend=record_spend,
         wrote=write,
+        images_saved=saved,
+        images_failed=failed,
     )
+
+
+def _store_images(store: ImageStore, decisions: list[Decision]) -> tuple[list[Decision], int, int]:
+    """Copia as imagens dos posts julgados e devolve as decisões com o caminho."""
+    result: list[Decision] = []
+    saved = failed = 0
+    for decision in decisions:
+        if not (decision.judged and decision.post.image_url):
+            result.append(decision)
+            continue
+        path = store.save(decision.post)
+        if path is None:
+            failed += 1
+            result.append(decision)
+            continue
+        saved += 1
+        result.append(replace(decision, post=replace(decision.post, image_path=path)))
+    return result, saved, failed
 
 
 def _save(repository: Repository, decisions: Sequence[Decision]) -> None:

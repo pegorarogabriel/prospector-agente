@@ -114,3 +114,21 @@ class FakeMessenger:
 
     def confirm(self, chat_id: int, message_id: int, label: str) -> None:
         self.confirmed.append((chat_id, message_id, label))
+
+
+class FakeImageStore:
+    """Finge guardar a imagem: devolve um caminho estável e lembra o que recebeu."""
+
+    def __init__(self) -> None:
+        self.saved: dict[str, str] = {}
+        self.fail_for: set[str] = set()
+
+    def save(self, post: Post) -> str | None:
+        if not post.image_url or post.id in self.fail_for:
+            return None
+        path = f"fake/{post.id}.jpg"
+        self.saved[path] = post.image_url
+        return path
+
+    def link(self, path: str) -> str | None:
+        return f"https://storage.invalid/{path}?token=fake"

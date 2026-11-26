@@ -141,6 +141,22 @@ class SearchProvider(Protocol):
     ) -> SearchResult: ...
 
 
+class ImageStore(Protocol):
+    """Onde a cópia das imagens fica guardada (Supabase Storage, ou memória nos testes)."""
+
+    def save(self, post: Post) -> str | None:
+        """Copia a imagem do post e devolve o caminho dela, ou `None` se não deu.
+
+        Falhar não é erro da coleta: a imagem pode já ter expirado ou ser
+        grande demais. O post segue sem cópia.
+        """
+        ...
+
+    def link(self, path: str) -> str | None:
+        """Uma URL temporária para o juiz ler a cópia. `None` se não deu."""
+        ...
+
+
 class Judge(Protocol):
     """A camada 2 da triagem: lê o post que passou nas regras e decide."""
 

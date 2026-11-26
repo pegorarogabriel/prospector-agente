@@ -15,7 +15,7 @@ pode ser medido em cima de posts cuja resposta está no próprio prompt.
 """
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 from prospector.core.feedback import post_was_good
@@ -113,7 +113,10 @@ class BacktestReport:
     cases: list[BacktestCase]
     examples: list[FewShotExample]
     skipped_image_only: int
-    """Posts só de imagem: a URL antiga expirou, então não há o que julgar."""
+    """Posts só de imagem e sem cópia guardada: a URL antiga expirou, não há o que julgar."""
+
+    stored_images: int = 0
+    """Posts julgados com a cópia da imagem no lugar da URL expirada."""
 
     skipped_by_limit: int = 0
     rules: Confusion = field(default_factory=Confusion)
@@ -148,10 +151,19 @@ def _balanced(cases: Sequence[LabeledPost], limit: int) -> list[LabeledPost]:
     return chosen
 
 
+def _with_stored_image(post: Post, image_link: Callable[[str], str | None] | None) -> Post:
+    """Troca a URL do Facebook (que expira) por um link para a cópia guardada."""
+    if post.image_path is None or image_link is None:
+        return post
+    link = image_link(post.image_path)
+    return replace(post, image_url=link) if link else post
+
+
 def run_backtest(
     labeled: Sequence[LabeledPost],
     make_judge: Callable[[list[FewShotExample]], Judge],
     *,
+    image_link: Callable[[str], str | None] | None = None,
     limit: int | None = None,
     examples_good: int = EXAMPLES_GOOD,
     examples_bad: int = EXAMPLES_BAD,
@@ -160,27 +172,39 @@ def run_backtest(
 
     A regra de idade usa a data do próprio post como "agora": o histórico é de
     setembro e outubro, e sem isso todo post cairia por ser velho.
+
+    `image_link` dá ao juiz a cópia guardada da imagem. Com ela, post só de
+    imagem também é medido; sem ela, ele é pulado.
     """
     examples = choose_examples(labeled, good=examples_good, bad=examples_bad)
     example_ids = {example.post_id for example in examples}
     judge = make_judge(examples)
 
     candidates = [item for item in labeled if item.post.id not in example_ids]
-    image_only = [item for item in candidates if not item.post.text.strip()]
-    measurable = [item for item in candidates if item.post.text.strip()]
+
+    def judgeable(item: LabeledPost) -> bool:
+        has_copy = image_link is not None and item.post.image_path is not None
+        return bool(item.post.text.strip()) or has_copy
+
+    image_only = [item for item in candidates if not judgeable(item)]
+    measurable = [item for item in candidates if judgeable(item)]
     chosen = _balanced(measurable, limit) if limit is not None else measurable
 
     cases: list[BacktestCase] = []
+    stored = 0
     for item in chosen:
         good = post_was_good(approved=item.decision.approved, feedback=item.feedback)
-        verdict = apply_rules(item.post, now=item.post.posted_at + timedelta(hours=1))
-        judged = judge.judge(item.post, verdict) if verdict.keep else None
-        cases.append(BacktestCase(item.post, good, item.feedback.reason or "", verdict, judged))
+        post = _with_stored_image(item.post, image_link)
+        verdict = apply_rules(post, now=post.posted_at + timedelta(hours=1))
+        judged = judge.judge(post, verdict) if verdict.keep else None
+        stored += judged is not None and post.image_url != item.post.image_url
+        cases.append(BacktestCase(post, good, item.feedback.reason or "", verdict, judged))
 
     return BacktestReport(
         cases=cases,
         examples=examples,
         skipped_image_only=len(image_only),
+        stored_images=stored,
         skipped_by_limit=len(measurable) - len(chosen),
         rules=Confusion.of([(case.good, case.rules.keep) for case in cases]),
         judge=Confusion.of(
