@@ -3,6 +3,7 @@
 Ver a tabela "O que conta como acerto e erro" em `docs/arquitetura.md` seção 3.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -105,3 +106,37 @@ def post_was_good(*, approved: bool, feedback: Feedback) -> bool:
     veredito concordam: aprovado e "certo", ou descartado e "errado".
     """
     return approved == (feedback.verdict is Verdict.RIGHT)
+
+
+# --- semana sem feedback (arquitetura seção 4) -----------------------------
+
+#: Uma "semana" do aprendizado: de um domingo ao seguinte.
+WEEK = timedelta(days=7)
+
+
+def week_had_feedback(feedback: Sequence[Feedback], *, start: datetime, end: datetime) -> bool:
+    """Houve alguma resposta minha (notificação ou auditoria) entre `start` e `end`?
+
+    Semana sem resposta é semana congelada: a coleta segue, o placar não mexe.
+    """
+    return any(start <= answer.answered_at < end for answer in feedback)
+
+
+def silent_weeks(
+    *, last_answer: datetime | None, first_question: datetime | None, now: datetime
+) -> int:
+    """Quantas semanas inteiras se passaram sem eu responder nada.
+
+    O silêncio conta a partir do mais recente entre a minha última resposta e a
+    primeira pergunta que o sistema me fez. Sem esse cuidado, o histórico
+    importado (respostas de setembro e outubro) faria o sistema começar
+    achando que eu sumi há meses e cortaria o orçamento no primeiro dia.
+
+    Se o sistema nunca me perguntou nada, não há silêncio: zero.
+    """
+    if first_question is None:
+        return 0
+    since = max(last_answer, first_question) if last_answer else first_question
+    if now <= since:
+        return 0
+    return int((now - since) / WEEK)
