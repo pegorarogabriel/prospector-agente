@@ -1,4 +1,4 @@
-"""Implementações falsas das portas `SearchProvider`, `Judge` e `Messenger`.
+"""Implementações falsas das portas `SearchProvider`, `Judge`, `Messenger` e do LLM.
 
 Servem aos testes e ao `prospector collect --dry-run`: o caminho inteiro da
 coleta roda sem gastar crédito do Apify, sem chamar LLM e sem mandar nada pro
@@ -12,10 +12,16 @@ espanhol, veículo incompatível, fora de SP, post velho, sem data.
 import hashlib
 import json
 import random
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from importlib import resources
 from typing import Any
+
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field
 
 from prospector.core.notification import Reply
 from prospector.core.post import Post, TriageResult
@@ -95,6 +101,7 @@ class FakeMessenger:
         self.sent: list[tuple[SentMessage, PostMessage]] = []
         self.replies: list[Reply] = []
         self.confirmed: list[tuple[int, int, str]] = []
+        self.texts: list[tuple[SentMessage, str]] = []
         self.fail_for: set[str] = set()
         """Ids de post cujo envio deve falhar (para testar o erro isolado)."""
         self._next_id = first_message_id
@@ -105,6 +112,12 @@ class FakeMessenger:
         sent = SentMessage(self.chat_id, self._next_id)
         self._next_id += 1
         self.sent.append((sent, message))
+        return sent
+
+    def send_text(self, text: str) -> SentMessage:
+        sent = SentMessage(self.chat_id, self._next_id)
+        self._next_id += 1
+        self.texts.append((sent, text))
         return sent
 
     def fetch_replies(self, offset: int | None) -> ReplyBatch:
@@ -132,3 +145,34 @@ class FakeImageStore:
 
     def link(self, path: str) -> str | None:
         return f"https://storage.invalid/{path}?token=fake"
+
+
+class ScriptedChatModel(BaseChatModel):
+    """Um modelo de chat do LangChain que devolve respostas roteirizadas.
+
+    É o fake do LLM do agente semanal. Cada chamada consome a próxima resposta
+    do roteiro (uma `AIMessage`, com ou sem chamada de ferramenta) e guarda o
+    que recebeu, para o teste conferir o prompt. Ferramentas são aceitas e
+    ignoradas: quem decide o que "chamar" é o roteiro.
+    """
+
+    script: list[AIMessage] = Field(default_factory=list)
+    received: list[list[BaseMessage]] = Field(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,  # noqa: ANN401 - assinatura do LangChain
+    ) -> ChatResult:
+        self.received.append(list(messages))
+        reply = self.script.pop(0) if self.script else AIMessage(content="(fim do roteiro)")
+        return ChatResult(generations=[ChatGeneration(message=reply)])
+
+    def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> "ScriptedChatModel":  # noqa: ANN401
+        return self
