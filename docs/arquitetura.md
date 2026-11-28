@@ -205,7 +205,7 @@ propor_ajustes         (LLM com ferramentas, num laço próprio)
 validar_ajustes        (código: guardrails abaixo)
    │
    ▼
-aplicar_ajustes  ──►  enviar_resumo  ──►  Telegram: resumo da semana
+aplicar_ajustes  ──►  enviar_resumo  ──►  Telegram: resumo + botão [Desfazer ajustes]
 ```
 
 ### Como roda no GitHub Actions (sem servidor)
@@ -261,6 +261,18 @@ O LLM **propõe**; o código **decide** se aplica (`validar_ajustes`, regras em 
 - Tudo que é aplicado vai pro `changelog` com o motivo. O que foi barrado aparece no resumo, com o porquê.
 
 **Por que ajustes automáticos:** eu não aprovo antes; avalio o efeito na semana seguinte. O botão de desfazer é a rede de segurança.
+
+### Resumo e botão Desfazer
+
+O resumo (`build_summary`, em `flows/weekly.py`) traz: posts triados e aprovados na semana, minhas respostas, o resultado da auditoria, o placar (acertos, erros, aposentadas, promovidas), o que o LLM viu nos meus motivos, os ajustes aplicados com o motivo de cada um e as propostas barradas com o porquê. Numa semana congelada, só "nada mudou", com o lembrete de 2 semanas ou o aviso do corte de orçamento de 4.
+
+Quando algum ajuste foi aplicado, a mensagem leva o botão **↩ Desfazer ajustes da semana** (`callback_data = undo`). A mensagem fica gravada em `weekly_runs` (`summary_chat_id`, `summary_message_id`); é por ela que o toque chega à semana certa.
+
+- A rotina de respostas (`ingest-replies`) reconhece o toque e chama `flows/undo.py` **na mesma transação** das respostas. Depois do commit, o botão vira "Ajustes da semana desfeitos".
+- O que é revertido, do último ajuste para o primeiro: regra nova → desligada; regra desligada → ligada de novo; busca nova → aposentada.
+- **O placar não muda.** Ele é conta sobre o que aconteceu, não um ajuste do agente.
+- Desfazer duas vezes não faz nada na segunda (`changelog.reverted_at`, `weekly_runs.undone_at`).
+- Como as outras respostas, o toque é lido em até ~2h (seção 8).
 
 ### O LLM do agente
 
@@ -323,6 +335,8 @@ Abrir post                       (link no texto)
 
 As regras moram em `core/notification.py`, sem Telegram, com testes. Só conta o que vem do meu chat (`TELEGRAM_CHAT_ID`): qualquer pessoa pode achar o bot e mandar mensagem.
 
+A mesma leitura também recebe os toques da auditoria semanal (`source = audit`, seção 6) e o botão Desfazer do resumo da semana, que não vira `Feedback`: reverte os ajustes daquela semana.
+
 ### Recebimento
 
 - **Sem servidor.** A rotina de respostas usa `getUpdates` a cada 2h. O Telegram guarda atualizações por até 24h. O bot não pode ter webhook configurado, senão o `getUpdates` é recusado.
@@ -358,7 +372,8 @@ src/prospector/
 │   ├── collect.py       coleta e triagem diária
 │   ├── backtest.py      mede regras e juiz contra as minhas respostas
 │   ├── notify.py        manda os aprovados pro Telegram e grava cada mensagem
-│   ├── ingest_replies.py lê meus ✓/✗, grava as respostas e o offset
+│   ├── ingest_replies.py lê meus ✓/✗ (e o Desfazer), grava as respostas e o offset
+│   ├── undo.py          o botão Desfazer: reverte regras e buscas da semana
 │   ├── weekly.py        passos do agente semanal que não são LLM (auditoria, placar,
 │   │                    backtest de regra, busca de teste, ajustes, resumo)
 │   └── import_legacy.py
