@@ -45,6 +45,7 @@ POST = Post(
 DECISION = TriagedPost(
     post_id="p1",
     result=TriageResult(approved=True, score=0.86, reason="procura agregado", vehicle="truck"),
+    decided_at=WHEN,
 )
 ANSWER = Feedback(
     post_id="p1",

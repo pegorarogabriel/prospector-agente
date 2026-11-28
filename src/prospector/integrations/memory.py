@@ -7,13 +7,16 @@ roda os mesmos testes nos dois para garantir que o fake não mente.
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from dataclasses import replace
+from datetime import UTC, datetime
 
-from prospector.core.feedback import Feedback
+from prospector.core.feedback import Feedback, FeedbackSource
 from prospector.core.notification import Notification
 from prospector.core.post import Post
 from prospector.core.recipe import Recipe
+from prospector.core.scoring import ScoringCandidate
 from prospector.core.triage import TriageRule
+from prospector.core.weekly import Change, RunStatus, WeeklyRun
 from prospector.flows.ports import LabeledPost, SearchRun, TriagedPost
 
 
@@ -29,6 +32,9 @@ class InMemoryRepository:
         self._rules: dict[str, TriageRule] = {}
         self._notifications: dict[tuple[int, int], Notification] = {}
         self._reply_offset: int | None = None
+        self._scored: dict[str, tuple[str, str]] = {}
+        self._runs: dict[str, WeeklyRun] = {}
+        self._changes: list[Change] = []
 
     def add_recipes(self, recipes: Sequence[Recipe]) -> int:
         added = 0
@@ -56,7 +62,9 @@ class InMemoryRepository:
         added = 0
         for item in triaged:
             if item.post_id not in self._triage:
-                self._triage[item.post_id] = item
+                # Como o `DEFAULT now()` do Postgres.
+                when = item.decided_at or datetime.now(UTC)
+                self._triage[item.post_id] = replace(item, decided_at=when)
                 added += 1
         return added
 
@@ -130,3 +138,99 @@ class InMemoryRepository:
 
     def save_reply_offset(self, offset: int) -> None:
         self._reply_offset = offset
+
+    def update_recipes(self, recipes: Sequence[Recipe]) -> int:
+        updated = 0
+        for recipe in recipes:
+            current = self._recipes.get(recipe.id)
+            if current is None:
+                continue
+            self._recipes[recipe.id] = replace(
+                current,
+                successes=recipe.successes,
+                failures=recipe.failures,
+                status=recipe.status,
+            )
+            updated += 1
+        return updated
+
+    def set_rule_active(self, rule_id: str, active: bool) -> bool:
+        rule = self._rules.get(rule_id)
+        if rule is None:
+            return False
+        self._rules[rule_id] = replace(rule, active=active)
+        return True
+
+    def first_notification_at(self) -> datetime | None:
+        return min((item.sent_at for item in self._notifications.values()), default=None)
+
+    def notified_post_ids(self, source: FeedbackSource) -> set[str]:
+        return {item.post_id for item in self._notifications.values() if item.source is source}
+
+    def list_scoring_candidates(self) -> list[ScoringCandidate]:
+        candidates = []
+        for item in self.list_triage_results():
+            if item.post_id in self._scored:
+                continue
+            post = self._posts.get(item.post_id)
+            assert item.decided_at is not None
+            candidates.append(
+                ScoringCandidate(
+                    post_id=item.post_id,
+                    recipe_ids=post.recipe_ids if post else frozenset(),
+                    approved=item.result.approved,
+                    decided_at=item.decided_at,
+                )
+            )
+        return candidates
+
+    def mark_scored(self, entries: Sequence[tuple[str, str, str]]) -> int:
+        added = 0
+        for post_id, week_id, outcome in entries:
+            if post_id not in self._scored:
+                self._scored[post_id] = (week_id, outcome)
+                added += 1
+        return added
+
+    def add_weekly_run(self, run: WeeklyRun) -> int:
+        if run.week_id in self._runs:
+            return 0
+        self._runs[run.week_id] = run
+        return 1
+
+    def get_weekly_run(self, week_id: str) -> WeeklyRun | None:
+        return self._runs.get(week_id)
+
+    def pending_weekly_run(self) -> WeeklyRun | None:
+        waiting = [run for run in self._runs.values() if run.status is RunStatus.WAITING]
+        return min(waiting, key=lambda run: run.started_at, default=None)
+
+    def update_weekly_run(self, run: WeeklyRun) -> None:
+        if run.week_id in self._runs:
+            self._runs[run.week_id] = run
+
+    def find_weekly_run_by_message(self, chat_id: int, message_id: int) -> WeeklyRun | None:
+        return next(
+            (
+                run
+                for run in self._runs.values()
+                if run.summary_chat_id == chat_id and run.summary_message_id == message_id
+            ),
+            None,
+        )
+
+    def add_changes(self, changes: Sequence[Change]) -> int:
+        for change in changes:
+            self._changes.append(replace(change, id=len(self._changes) + 1))
+        return len(changes)
+
+    def list_changes(self, week_id: str) -> list[Change]:
+        return [change for change in self._changes if change.week_id == week_id]
+
+    def mark_changes_reverted(self, ids: Sequence[int], when: datetime) -> int:
+        marked = 0
+        for index, change in enumerate(self._changes):
+            if change.id in ids and change.reverted_at is None:
+                self._changes[index] = replace(change, reverted_at=when)
+                marked += 1
+        return marked

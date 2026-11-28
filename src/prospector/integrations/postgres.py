@@ -12,13 +12,16 @@ from datetime import datetime
 from importlib import resources
 
 import psycopg
+from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
 from prospector.core.feedback import Feedback, FeedbackSource, Verdict
 from prospector.core.notification import Notification
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe, RecipeOrigin, RecipeStatus
+from prospector.core.scoring import ScoringCandidate
 from prospector.core.triage import TriageRule
+from prospector.core.weekly import Change, ChangeKind, RunStatus, WeeklyRun
 from prospector.flows.ports import LabeledPost, SearchRun, TriagedPost
 
 _REPLY_OFFSET_KEY = "telegram_reply_offset"
@@ -184,8 +187,8 @@ class PostgresRepository:
         return self._insert_each(
             """
             INSERT INTO triage_results
-                (post_id, approved, score, reason, vehicle, origin, destination)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (post_id, approved, score, reason, vehicle, origin, destination, decided_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, coalesce(%s, now()))
             ON CONFLICT (post_id) DO NOTHING
             """,
             [
@@ -197,6 +200,7 @@ class PostgresRepository:
                     item.result.vehicle,
                     item.result.origin,
                     item.result.destination,
+                    item.decided_at,
                 )
                 for item in triaged
             ],
@@ -205,7 +209,7 @@ class PostgresRepository:
     def list_triage_results(self) -> list[TriagedPost]:
         rows = self._conn.execute(
             """
-            SELECT post_id, approved, score, reason, vehicle, origin, destination
+            SELECT post_id, approved, score, reason, vehicle, origin, destination, decided_at
             FROM triage_results ORDER BY post_id
             """
         )
@@ -220,8 +224,9 @@ class PostgresRepository:
                     origin=origin,
                     destination=destination,
                 ),
+                decided_at=decided_at,
             )
-            for post_id, approved, score, reason, vehicle, origin, destination in rows
+            for post_id, approved, score, reason, vehicle, origin, destination, decided_at in rows
         ]
 
     # --- respostas --------------------------------------------------------
@@ -373,3 +378,204 @@ class PostgresRepository:
             """,
             (_REPLY_OFFSET_KEY, str(offset)),
         )
+
+    # --- agente semanal ---------------------------------------------------
+
+    def update_recipes(self, recipes: Sequence[Recipe]) -> int:
+        return self._insert_each(
+            "UPDATE recipes SET successes = %s, failures = %s, status = %s WHERE id = %s",
+            [(r.successes, r.failures, r.status.value, r.id) for r in recipes],
+        )
+
+    def set_rule_active(self, rule_id: str, active: bool) -> bool:
+        cur = self._conn.execute(
+            "UPDATE triage_rules SET active = %s WHERE id = %s", (active, rule_id)
+        )
+        return cur.rowcount > 0
+
+    def first_notification_at(self) -> datetime | None:
+        row = self._conn.execute("SELECT min(sent_at) FROM notifications").fetchone()
+        return row[0] if row else None
+
+    def notified_post_ids(self, source: FeedbackSource) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT post_id FROM notifications WHERE source = %s", (source.value,)
+        )
+        return {post_id for (post_id,) in rows}
+
+    def list_scoring_candidates(self) -> list[ScoringCandidate]:
+        recipe_ids: dict[str, set[str]] = {}
+        for post_id, recipe_id in self._conn.execute(
+            """
+            SELECT pr.post_id, pr.recipe_id FROM post_recipes pr
+            WHERE NOT EXISTS (SELECT 1 FROM scored_posts s WHERE s.post_id = pr.post_id)
+            """
+        ):
+            recipe_ids.setdefault(post_id, set()).add(recipe_id)
+        rows = self._conn.execute(
+            """
+            SELECT t.post_id, t.approved, t.decided_at FROM triage_results t
+            WHERE NOT EXISTS (SELECT 1 FROM scored_posts s WHERE s.post_id = t.post_id)
+            ORDER BY t.post_id
+            """
+        )
+        return [
+            ScoringCandidate(post_id, frozenset(recipe_ids.get(post_id, set())), approved, when)
+            for post_id, approved, when in rows
+        ]
+
+    def mark_scored(self, entries: Sequence[tuple[str, str, str]]) -> int:
+        return self._insert_each(
+            """
+            INSERT INTO scored_posts (post_id, week_id, outcome) VALUES (%s, %s, %s)
+            ON CONFLICT (post_id) DO NOTHING
+            """,
+            list(entries),
+        )
+
+    def add_weekly_run(self, run: WeeklyRun) -> int:
+        return self._insert_each(
+            f"""
+            INSERT INTO weekly_runs ({_RUN_COLUMNS})
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (week_id) DO NOTHING
+            """,
+            [_run_values(run)],
+        )
+
+    def get_weekly_run(self, week_id: str) -> WeeklyRun | None:
+        row = self._conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM weekly_runs WHERE week_id = %s", (week_id,)
+        ).fetchone()
+        return _run(row) if row else None
+
+    def pending_weekly_run(self) -> WeeklyRun | None:
+        row = self._conn.execute(
+            f"""
+            SELECT {_RUN_COLUMNS} FROM weekly_runs
+            WHERE status = 'waiting' ORDER BY started_at LIMIT 1
+            """
+        ).fetchone()
+        return _run(row) if row else None
+
+    def update_weekly_run(self, run: WeeklyRun) -> None:
+        week_id, *rest = _run_values(run)
+        self._conn.execute(
+            """
+            UPDATE weekly_runs SET started_at = %s, resume_after = %s, status = %s,
+                finished_at = %s, summary_chat_id = %s, summary_message_id = %s,
+                undone_at = %s
+            WHERE week_id = %s
+            """,
+            (*rest, week_id),
+        )
+
+    def find_weekly_run_by_message(self, chat_id: int, message_id: int) -> WeeklyRun | None:
+        row = self._conn.execute(
+            f"""
+            SELECT {_RUN_COLUMNS} FROM weekly_runs
+            WHERE summary_chat_id = %s AND summary_message_id = %s
+            """,
+            (chat_id, message_id),
+        ).fetchone()
+        return _run(row) if row else None
+
+    def add_changes(self, changes: Sequence[Change]) -> int:
+        return self._insert_each(
+            """
+            INSERT INTO changelog (week_id, kind, target_id, reason, detail, applied_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            [
+                (c.week_id, c.kind.value, c.target_id, c.reason, c.detail, c.applied_at)
+                for c in changes
+            ],
+        )
+
+    def list_changes(self, week_id: str) -> list[Change]:
+        rows = self._conn.execute(
+            """
+            SELECT id, week_id, kind, target_id, reason, detail, applied_at, reverted_at
+            FROM changelog WHERE week_id = %s ORDER BY id
+            """,
+            (week_id,),
+        )
+        return [
+            Change(
+                id=id_,
+                week_id=week,
+                kind=ChangeKind(kind),
+                target_id=target,
+                reason=reason,
+                detail=detail,
+                applied_at=applied,
+                reverted_at=reverted,
+            )
+            for id_, week, kind, target, reason, detail, applied, reverted in rows
+        ]
+
+    def mark_changes_reverted(self, ids: Sequence[int], when: datetime) -> int:
+        if not ids:
+            return 0
+        cur = self._conn.execute(
+            "UPDATE changelog SET reverted_at = %s WHERE id = ANY(%s) AND reverted_at IS NULL",
+            (when, list(ids)),
+        )
+        return cur.rowcount
+
+
+_RUN_COLUMNS = (
+    "week_id, started_at, resume_after, status, finished_at, "
+    "summary_chat_id, summary_message_id, undone_at"
+)
+
+
+def _run_values(run: WeeklyRun) -> tuple[object, ...]:
+    return (
+        run.week_id,
+        run.started_at,
+        run.resume_after,
+        run.status.value,
+        run.finished_at,
+        run.summary_chat_id,
+        run.summary_message_id,
+        run.undone_at,
+    )
+
+
+def _run(row: tuple) -> WeeklyRun:
+    week_id, started, resume_after, status, finished, chat, message, undone = row
+    return WeeklyRun(
+        week_id=week_id,
+        started_at=started,
+        resume_after=resume_after,
+        status=RunStatus(status),
+        finished_at=finished,
+        summary_chat_id=chat,
+        summary_message_id=message,
+        undone_at=undone,
+    )
+
+
+#: As tabelas que o `PostgresSaver.setup()` cria.
+CHECKPOINT_TABLES = (
+    "checkpoints",
+    "checkpoint_blobs",
+    "checkpoint_writes",
+    "checkpoint_migrations",
+)
+
+
+def secure_checkpoint_tables(conn: psycopg.Connection) -> None:
+    """Liga o RLS nas tabelas que o `PostgresSaver` do LangGraph cria.
+
+    O Supabase expõe pela API REST toda tabela do schema público. Os
+    checkpoints guardam o estado do grafo semanal; mesmo sem texto de post,
+    não há motivo para ficarem legíveis por lá (mesma regra da seção 10).
+    """
+    # A conexão do PostgresSaver devolve linhas como dicionário; aqui, tupla.
+    with conn.cursor(row_factory=tuple_row) as cur:
+        for table in CHECKPOINT_TABLES:
+            exists = cur.execute("SELECT to_regclass(%s)", (table,)).fetchone()
+            if exists and exists[0] is not None:
+                cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
