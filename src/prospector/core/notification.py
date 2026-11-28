@@ -24,6 +24,11 @@ OTHER_CHOICE = "o"
 DONE_CHOICE = "done"
 """O botão inerte que substitui os outros depois que a resposta é gravada."""
 
+UNDO_CHOICE = "undo"
+"""O botão "Desfazer ajustes" do resumo da semana (seção 6, etapa 7)."""
+
+UNDONE_LABEL = "Ajustes da semana desfeitos"
+
 #: Quantos motivos de ✗ viram botão (fora o "Outro").
 REJECT_BUTTONS = 3
 

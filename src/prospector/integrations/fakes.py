@@ -102,6 +102,8 @@ class FakeMessenger:
         self.replies: list[Reply] = []
         self.confirmed: list[tuple[int, int, str]] = []
         self.texts: list[tuple[SentMessage, str]] = []
+        self.undo_offered: list[int] = []
+        """Mensagens de resumo que levaram o botão Desfazer."""
         self.fail_for: set[str] = set()
         """Ids de post cujo envio deve falhar (para testar o erro isolado)."""
         self._next_id = first_message_id
@@ -114,10 +116,12 @@ class FakeMessenger:
         self.sent.append((sent, message))
         return sent
 
-    def send_text(self, text: str) -> SentMessage:
+    def send_summary(self, text: str, *, undo: bool) -> SentMessage:
         sent = SentMessage(self.chat_id, self._next_id)
         self._next_id += 1
         self.texts.append((sent, text))
+        if undo:
+            self.undo_offered.append(sent.message_id)
         return sent
 
     def fetch_replies(self, offset: int | None) -> ReplyBatch:
