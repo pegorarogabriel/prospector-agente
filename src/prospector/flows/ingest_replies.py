@@ -15,10 +15,19 @@ celular diria "registrado" sobre algo que o banco desfez.
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from prospector.core.feedback import Feedback
-from prospector.core.notification import Notification, Reply, answer_label, feedback_from_replies
+from prospector.core.notification import (
+    UNDO_CHOICE,
+    UNDONE_LABEL,
+    Notification,
+    Reply,
+    answer_label,
+    feedback_from_replies,
+)
 from prospector.flows.ports import Messenger, Repository
+from prospector.flows.undo import undo_week
 
 
 @dataclass(frozen=True)
@@ -45,9 +54,22 @@ class IngestReport:
 
     confirmations: list[Confirmation] = field(default_factory=list)
 
+    undone_weeks: list[str] = field(default_factory=list)
+    """Semanas cujo botão "Desfazer ajustes" eu toquei (desfeitas só com `write`)."""
 
-def ingest_replies(repository: Repository, messenger: Messenger, *, write: bool) -> IngestReport:
-    """Lê, interpreta e (com `write`) grava as respostas e o novo offset."""
+
+def ingest_replies(
+    repository: Repository,
+    messenger: Messenger,
+    *,
+    write: bool,
+    now: datetime | None = None,
+) -> IngestReport:
+    """Lê, interpreta e (com `write`) grava as respostas e o novo offset.
+
+    Um toque em "Desfazer ajustes" no resumo da semana desfaz os ajustes dela
+    na mesma transação das respostas.
+    """
     batch = messenger.fetch_replies(repository.reply_offset())
 
     by_message: dict[tuple[int, int], list[Reply]] = defaultdict(list)
@@ -69,11 +91,19 @@ def ingest_replies(repository: Repository, messenger: Messenger, *, write: bool)
 
     feedback: list[Feedback] = []
     confirmations: list[Confirmation] = []
+    undone: list[str] = []
     unknown = waiting = 0
     for key, replies in by_message.items():
         notification = known.get(key)
         if notification is None:
-            unknown += len(replies)
+            week = _undo_request(repository, key, replies)
+            if week is None:
+                unknown += len(replies)
+                continue
+            undone.append(week)
+            if write:
+                undo_week(repository, week, now=now or replies[-1].answered_at)
+            confirmations.append(Confirmation(key[0], key[1], UNDONE_LABEL))
             continue
         previous = answered.get((notification.post_id, notification.source))
         answer = previous or feedback_from_replies(notification, replies)
@@ -97,7 +127,16 @@ def ingest_replies(repository: Repository, messenger: Messenger, *, write: bool)
         feedback=feedback,
         recorded=recorded,
         confirmations=confirmations,
+        undone_weeks=undone,
     )
+
+
+def _undo_request(repository: Repository, key: tuple[int, int], replies: list[Reply]) -> str | None:
+    """A semana a desfazer, se estas respostas são o botão Desfazer de um resumo."""
+    if not any(reply.choice == UNDO_CHOICE for reply in replies):
+        return None
+    run = repository.find_weekly_run_by_message(*key)
+    return run.week_id if run is not None else None
 
 
 def confirm_replies(messenger: Messenger, report: IngestReport) -> list[str]:
