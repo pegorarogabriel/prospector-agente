@@ -32,6 +32,7 @@ from prospector.core.budget import (
     can_spend,
     daily_budget,
 )
+from prospector.core.feedback import silent_weeks
 from prospector.core.post import Post, TriageResult
 from prospector.core.region import HOME_BASE, MAX_DISTANCE_KM
 from prospector.core.rules import MAX_POST_AGE, RuleVerdict, apply_rules
@@ -109,6 +110,8 @@ class CollectReport:
     wrote: bool
     images_saved: int = 0
     images_failed: int = 0
+    silent_weeks: int = 0
+    """Semanas seguidas sem resposta minha. A partir de 4, o orçamento cai à metade."""
 
     @property
     def charged(self) -> int:
@@ -155,8 +158,13 @@ def collect(
     """
     spent = repository.results_spent_since(_month_start(now))
     spent_before = spent
+    silent = current_silent_weeks(repository, now=now)
     budget = daily_budget(
-        spent, now.date(), monthly_budget=settings.monthly_budget, cap=settings.daily_cap
+        spent,
+        now.date(),
+        monthly_budget=settings.monthly_budget,
+        cap=settings.daily_cap,
+        silent_weeks=silent,
     )
     recipes = {recipe.id: recipe for recipe in repository.list_recipes()}
 
@@ -221,7 +229,7 @@ def collect(
     if record_spend:
         repository.add_search_runs(runs)
     if write:
-        _save(repository, decisions)
+        _save(repository, decisions, now)
 
     return CollectReport(
         spent_before=spent_before,
@@ -236,6 +244,16 @@ def collect(
         wrote=write,
         images_saved=saved,
         images_failed=failed,
+        silent_weeks=silent,
+    )
+
+
+def current_silent_weeks(repository: Repository, *, now: datetime) -> int:
+    """Semanas seguidas sem resposta minha (seção 4). Com 4, o orçamento cai à metade."""
+    answers = repository.list_feedback()
+    last = max((answer.answered_at for answer in answers), default=None)
+    return silent_weeks(
+        last_answer=last, first_question=repository.first_notification_at(), now=now
     )
 
 
@@ -257,8 +275,8 @@ def _store_images(store: ImageStore, decisions: list[Decision]) -> tuple[list[De
     return result, saved, failed
 
 
-def _save(repository: Repository, decisions: Sequence[Decision]) -> None:
+def _save(repository: Repository, decisions: Sequence[Decision], now: datetime) -> None:
     repository.add_posts([decision.post for decision in decisions])
     repository.add_triage_results(
-        [TriagedPost(decision.post.id, decision.result) for decision in decisions]
+        [TriagedPost(decision.post.id, decision.result, now) for decision in decisions]
     )

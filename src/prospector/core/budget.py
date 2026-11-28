@@ -14,6 +14,10 @@ MONTHLY_RESULT_BUDGET = 900
 #: Teto do orçamento diário, mesmo quando a conta daria mais.
 MAX_DAILY_RESULTS = 40
 
+#: Semanas seguidas sem resposta minha a partir das quais o orçamento cai pela
+#: metade (seção 4): não gastar crédito do Apify sem ninguém olhando.
+SILENT_WEEKS_BUDGET_CUT = 4
+
 
 def days_left_in_month(today: date) -> int:
     """Dias que ainda restam no mês, contando hoje.
@@ -40,6 +44,7 @@ def daily_budget(
     *,
     monthly_budget: int = MONTHLY_RESULT_BUDGET,
     cap: int = MAX_DAILY_RESULTS,
+    silent_weeks: int = 0,
 ) -> int:
     """Quantos resultados a coleta de hoje pode gastar.
 
@@ -50,9 +55,15 @@ def daily_budget(
 
     Divisão inteira, porque meio post não existe — e arredondar para baixo erra
     para o lado seguro.
+
+    Depois de `SILENT_WEEKS_BUDGET_CUT` semanas seguidas sem resposta minha, o
+    resultado cai pela metade. A primeira resposta desfaz o corte sozinha.
     """
     remaining = remaining_monthly_budget(spent_this_month, monthly_budget=monthly_budget)
-    return min(remaining // days_left_in_month(today), cap)
+    budget = min(remaining // days_left_in_month(today), cap)
+    if silent_weeks >= SILENT_WEEKS_BUDGET_CUT:
+        budget //= 2
+    return budget
 
 
 def can_spend(

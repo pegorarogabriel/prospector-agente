@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from prospector.core.feedback import FeedbackSource
 from prospector.core.notification import (
     DONE_CHOICE,
     OTHER_CHOICE,
@@ -74,18 +75,24 @@ def render_post(message: PostMessage) -> dict[str, Any]:
     if message.queries:
         details.append("receita: " + html.escape(", ".join(message.queries)))
 
+    audit = message.source is FeedbackSource.AUDIT
+    header = (
+        "<b>Auditoria: descartei este post. Confirma?</b>" if audit else "<b>Novo post aprovado</b>"
+    )
+    why = "Por que descartei" if audit else "Por que aprovei"
     text = "\n".join(
         [
-            "<b>Novo post aprovado</b>",
+            header,
             quote,
             "",
             " · ".join(details),
-            f"Por que aprovei: {html.escape(result.reason)}",
+            f"{why}: {html.escape(result.reason)}",
             f'<a href="{html.escape(post.url, quote=True)}">Abrir post</a>',
         ]
     )
 
-    keyboard = [[_button("✓ Certo", RIGHT_CHOICE)]]
+    # Nas duas perguntas, ✓ quer dizer "você decidiu bem" (core/feedback.py).
+    keyboard = [[_button("✓ Descarte certo" if audit else "✓ Certo", RIGHT_CHOICE)]]
     keyboard += [
         [_button(f"✗ {reason}", reject_choice(index))]
         for index, reason in enumerate(message.reject_reasons)

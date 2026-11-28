@@ -8,17 +8,19 @@ conhecem estas assinaturas. É isso que deixa os testes rodarem sem banco.
 Ver `docs/arquitetura.md` seção 9.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from prospector.core.feedback import Feedback
+from prospector.core.feedback import Feedback, FeedbackSource
 from prospector.core.notification import Notification, Reply
 from prospector.core.post import Post, TriageResult
 from prospector.core.recipe import Recipe
 from prospector.core.rules import RuleVerdict
-from prospector.core.triage import TriageRule
+from prospector.core.scoring import ScoringCandidate
+from prospector.core.triage import FewShotExample, TriageRule
+from prospector.core.weekly import Change, WeeklyRun
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,8 @@ class TriagedPost:
 
     post_id: str
     result: TriageResult
+    decided_at: datetime | None = None
+    """Quando a triagem decidiu. `None` ao gravar quer dizer "agora"."""
 
 
 @dataclass(frozen=True)
@@ -48,7 +52,9 @@ class SearchRun:
     """
 
     ran_at: datetime
-    recipe_id: str
+    recipe_id: str | None
+    """`None` nas buscas de teste do agente (`testar_receita`): o termo ainda não é receita."""
+
     requested: int
     charged: int
     live: bool
@@ -122,6 +128,54 @@ class Repository(Protocol):
         """Guarda o próximo `update_id`. Entra na mesma transação das respostas."""
         ...
 
+    # --- agente semanal (seção 6) ---------------------------------------------
+
+    def update_recipes(self, recipes: Sequence[Recipe]) -> int:
+        """Grava placar e status de receitas que já existem. As desconhecidas são ignoradas."""
+        ...
+
+    def set_rule_active(self, rule_id: str, active: bool) -> bool:
+        """Liga ou desliga uma regra de triagem. `False` se a regra não existe."""
+        ...
+
+    def first_notification_at(self) -> datetime | None:
+        """Quando o sistema me fez a primeira pergunta no Telegram."""
+        ...
+
+    def notified_post_ids(self, source: FeedbackSource) -> set[str]:
+        """Posts que já viraram mensagem desta pergunta (para não auditar duas vezes)."""
+        ...
+
+    def list_scoring_candidates(self) -> list[ScoringCandidate]:
+        """Posts decididos que ainda não entraram no placar."""
+        ...
+
+    def mark_scored(self, entries: Sequence[tuple[str, str, str]]) -> int:
+        """Registra (post, semana, resultado) dos posts que entraram no placar ou foram pulados."""
+        ...
+
+    def add_weekly_run(self, run: WeeklyRun) -> int: ...
+
+    def get_weekly_run(self, week_id: str) -> WeeklyRun | None: ...
+
+    def pending_weekly_run(self) -> WeeklyRun | None:
+        """A execução que está pausada esperando a auditoria, se houver."""
+        ...
+
+    def update_weekly_run(self, run: WeeklyRun) -> None: ...
+
+    def find_weekly_run_by_message(self, chat_id: int, message_id: int) -> WeeklyRun | None:
+        """A semana cujo resumo é esta mensagem (para o botão Desfazer)."""
+        ...
+
+    def add_changes(self, changes: Sequence[Change]) -> int:
+        """Registra ajustes aplicados. São eventos: sempre entram."""
+        ...
+
+    def list_changes(self, week_id: str) -> list[Change]: ...
+
+    def mark_changes_reverted(self, ids: Sequence[int], when: datetime) -> int: ...
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -163,6 +217,11 @@ class Judge(Protocol):
     def judge(self, post: Post, verdict: RuleVerdict) -> TriageResult: ...
 
 
+JudgeFactory = Callable[[Sequence[TriageRule], list[FewShotExample]], Judge]
+"""Monta um juiz com estas regras e exemplos. O agente usa para testar uma regra
+nova: o mesmo juiz do dia a dia, só que lendo as regras propostas."""
+
+
 @dataclass(frozen=True)
 class PostMessage:
     """O que vai na mensagem de um post aprovado (seção 8). Quem desenha é a integração."""
@@ -175,6 +234,9 @@ class PostMessage:
     age: timedelta
     reject_reasons: tuple[str, ...]
     """Os motivos de ✗ que viram botão, nesta ordem."""
+
+    source: FeedbackSource = FeedbackSource.NOTIFICATION
+    """`AUDIT` desenha a pergunta da auditoria: "descartei, confirma?"."""
 
 
 @dataclass(frozen=True)
@@ -196,6 +258,10 @@ class Messenger(Protocol):
     """A ponte com o celular: o bot do Telegram, ou um fake nos testes."""
 
     def send_post(self, message: PostMessage) -> SentMessage: ...
+
+    def send_text(self, text: str) -> SentMessage:
+        """Uma mensagem simples, sem botões (resumo da semana, lembretes)."""
+        ...
 
     def fetch_replies(self, offset: int | None) -> ReplyBatch:
         """Botões e replies desde `offset`, só do meu chat. Não confirma nada sozinho."""

@@ -1,0 +1,53 @@
+name: Agente semanal
+
+# Domingo: auditoria e pausa do grafo LangGraph (docs/arquitetura.md seção 6).
+# A retomada roda no replies.yml, a cada 2h, quando a auditoria é respondida
+# ou quando vence o prazo de segunda 8h.
+on:
+  schedule:
+    - cron: "0 13 * * 0" # domingo, 10h em Brasília
+  workflow_dispatch:
+
+# O mesmo grupo do job de retomada no replies.yml: começar e retomar a mesma
+# semana ao mesmo tempo poderia mandar a auditoria duas vezes.
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  semanal:
+    # Chave liga/desliga (docs/arquitetura.md seção 10).
+    if: github.event_name == 'workflow_dispatch' || vars.PROSPECTOR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # testar_receita: no máximo 2 buscas de teste por semana, dentro do teto do mês.
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Link temporário da cópia da imagem na mensagem de auditoria.
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Instala o uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Instala as dependências
+        run: uv sync --no-dev
+
+      - name: Aplica migrações pendentes
+        run: uv run prospector db migrate
+
+      - name: Começa a semana
+        run: uv run prospector weekly start --summary

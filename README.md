@@ -56,6 +56,10 @@ uv run prospector telegram chats                              # acha o TELEGRAM_
 uv run prospector telegram ping                               # mensagem de teste no celular
 uv run prospector ingest-replies --dry-run                    # mostra meus ✓/✗ pendentes, sem gravar
 uv run prospector ingest-replies                              # grava as respostas no banco
+uv run prospector weekly start --dry-run                      # semana simulada: LLM roteirizado, nada gravado nem enviado
+uv run prospector weekly start                                # começa a semana: auditoria e pausa (o weekly.yml faz isso no domingo)
+uv run prospector weekly resume                               # retoma a semana pausada, se for a hora (o replies.yml faz a cada 2h)
+uv run prospector weekly resume --force                       # retoma sem esperar a auditoria
 ```
 
 ### Telegram

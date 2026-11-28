@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "anthropic>=2.14.0",
     "httpx>=0.28",
+    "langchain-anthropic>=1.7.13",
+    "langgraph>=1.2.24",
+    "langgraph-checkpoint-postgres>=3.2.1",
     "psycopg[binary]>=3.2",
     "pydantic>=2.14.4",
     "python-dotenv>=1.0",

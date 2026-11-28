@@ -21,11 +21,17 @@ from prospector.flows.import_legacy import LEGACY_PRIOR_WEIGHT, ImportReport, im
 from prospector.flows.ports import Repository
 
 if TYPE_CHECKING:
+    import psycopg
+    from langchain_core.language_models import BaseChatModel
+
+    from prospector.agent.deps import WeeklyDeps
+    from prospector.agent.runner import RunReport
     from prospector.core.triage import FewShotExample
     from prospector.flows.backtest import BacktestReport
     from prospector.flows.ingest_replies import IngestReport
     from prospector.flows.notify import NotifyReport
-    from prospector.flows.ports import Judge, PostMessage, SearchProvider
+    from prospector.flows.ports import Judge, JudgeFactory, PostMessage, SearchProvider
+    from prospector.flows.weekly import WeeklySettings
     from prospector.integrations.llm import ClaudeJudge
     from prospector.integrations.supabase_storage import SupabaseImageStore
     from prospector.integrations.telegram import TelegramMessenger
@@ -469,6 +475,205 @@ def _cmd_import_legacy(args: argparse.Namespace) -> None:
         _print_report(report, postgres)
 
 
+# --- agente semanal (etapa 6) ----------------------------------------------
+
+#: Modelo do agente semanal: roda 1x por semana, raciocina e usa ferramentas.
+DEFAULT_AGENT_MODEL = "claude-opus-5-5"
+
+#: Modelos que aceitam o fallback de recusa do lado do servidor
+#: (`fallbacks: "default"`): se o Claude recusar, outro modelo continua.
+_SERVER_FALLBACK_MODELS = {
+    "claude-opus-5-5",
+    "claude-opus-5",
+    "claude-sonnet-5-5",
+    "claude-fable-5-1",
+    "claude-fable-5-2",
+}
+
+
+def _agent_model() -> "BaseChatModel":
+    """O LLM do agente semanal: Claude via LangChain (`ChatAnthropic`)."""
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        sys.exit("ANTHROPIC_API_KEY não configurada no .env.")
+    from langchain_anthropic import ChatAnthropic
+
+    model = os.environ.get("AGENT_MODEL", "").strip() or DEFAULT_AGENT_MODEL
+    extra: dict[str, object] = {}
+    if model in _SERVER_FALLBACK_MODELS:
+        extra = {
+            "betas": ["server-side-fallback-2026-07-01"],
+            "model_kwargs": {"fallbacks": "default"},
+        }
+    return ChatAnthropic(
+        model=model,
+        max_tokens=16000,
+        # Opus 5.5 vem com esforço "medium"; o agente raciocina sobre os meus
+        # motivos e testa hipóteses, então "high".
+        output_config={"effort": "high"},
+        max_retries=3,
+        **extra,
+    )
+
+
+def _judge_factory(dry_run: bool) -> "JudgeFactory":
+    """Monta o juiz com as regras que o agente quer testar."""
+    from prospector.integrations.fakes import FakeJudge
+
+    if dry_run:
+        return lambda rules, examples: FakeJudge()
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        sys.exit("ANTHROPIC_API_KEY não configurada no .env.")
+    import anthropic
+
+    from prospector.integrations.llm import DEFAULT_MODEL, ClaudeJudge
+
+    client = anthropic.Anthropic()
+    model = os.environ.get("JUDGE_MODEL", "").strip() or DEFAULT_MODEL
+    return lambda rules, examples: ClaudeJudge(
+        client=client, rules=rules, examples=examples, model=model
+    )
+
+
+def _weekly_settings() -> "WeeklySettings":
+    from prospector.core.scoring import ScoringSettings
+    from prospector.flows.weekly import WeeklySettings
+
+    collect = _collect_settings()
+    defaults = ScoringSettings()
+    scoring = ScoringSettings(
+        decay=float(os.environ.get("RECIPE_DECAY", "").strip() or defaults.decay),
+        max_active=_env_int("MAX_ACTIVE_RECIPES", defaults.max_active),
+        min_trials=float(
+            os.environ.get("RETIREMENT_MIN_TRIALS", "").strip() or defaults.min_trials
+        ),
+        threshold=float(
+            os.environ.get("RETIREMENT_PROBABILITY_THRESHOLD", "").strip() or defaults.threshold
+        ),
+    )
+    return WeeklySettings(
+        scoring=scoring,
+        monthly_budget=collect.monthly_budget,
+        base=collect.base,
+        max_age=collect.max_age,
+    )
+
+
+def _weekly_deps(conn: "psycopg.Connection", *, dry_run: bool, now: datetime) -> "WeeklyDeps":
+    import random
+
+    from prospector.agent.deps import WeeklyDeps
+    from prospector.integrations.fakes import (
+        FakeMessenger,
+        SampleSearchProvider,
+        ScriptedChatModel,
+    )
+    from prospector.integrations.postgres import PostgresRepository
+
+    repository = PostgresRepository(conn)
+    if dry_run:
+        return WeeklyDeps(
+            repository=repository,
+            messenger=FakeMessenger(),
+            model=ScriptedChatModel(),
+            make_judge=_judge_factory(dry_run=True),
+            search=SampleSearchProvider(now=now),
+            now=lambda: now,
+            rng=random.Random(),
+            settings=_weekly_settings(),
+        )
+    configured = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+    images = _image_store() if configured else None
+    return WeeklyDeps(
+        repository=repository,
+        messenger=_telegram(),
+        model=_agent_model(),
+        make_judge=_judge_factory(dry_run=False),
+        search=_apify_search(),
+        now=lambda: datetime.now(UTC),
+        rng=random.Random(),
+        commit=conn.commit,
+        settings=_weekly_settings(),
+        image_link=images.link if images else None,
+    )
+
+
+def _print_weekly(reports: "list[RunReport]") -> None:
+    for report in reports:
+        week = report.week_id or "-"
+        print(f"Semana {week}: {report.status}")
+
+
+def _print_dry_run_messages(deps: "WeeklyDeps", *, summary: bool) -> None:
+    from prospector.integrations.telegram import render_post
+
+    messenger = deps.messenger
+    sent = getattr(messenger, "sent", [])
+    texts = getattr(messenger, "texts", [])
+    print(f"\nMensagens que iriam pro Telegram: {len(sent)} de auditoria, {len(texts)} resumo(s)")
+    if summary:
+        return
+    for _, message in sent:
+        print("  " + "-" * 60)
+        for line in render_post(message)["text"].splitlines():
+            print(f"  {line}")
+    for _, text in texts:
+        print("  " + "-" * 60)
+        for line in text.splitlines():
+            print(f"  {line}")
+
+
+def _cmd_weekly(args: argparse.Namespace) -> None:
+    import psycopg
+
+    from prospector.agent.runner import resume_week, start_week
+    from prospector.integrations.postgres import PostgresRepository
+
+    now = datetime.now(UTC)
+    with psycopg.connect(_database_url()) as conn:
+        if args.weekly_command == "resume" and not args.dry_run:
+            # A cada 2h, quase sempre não há semana pausada: sai sem montar nada.
+            if PostgresRepository(conn).pending_weekly_run() is None:
+                print("Nenhuma semana pausada.")
+                return
+
+        if args.dry_run:
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            print("[dry-run] banco real só para leitura, LLM roteirizado, juiz e Telegram falsos.")
+            print("Nada é gravado: tudo é desfeito no fim.\n")
+            deps = _weekly_deps(conn, dry_run=True, now=now)
+            saver = InMemorySaver()
+            reports = start_week(deps, saver, now=now)
+            if reports[-1].waiting:
+                # No dry-run não dá para esperar a auditoria: segue como se o prazo tivesse vencido.
+                reports.append(resume_week(deps, saver, now=now, force=True))
+            _print_weekly(reports)
+            _print_dry_run_messages(deps, summary=args.summary)
+            conn.rollback()
+            return
+
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg.rows import dict_row
+
+        from prospector.integrations.postgres import secure_checkpoint_tables
+
+        deps = _weekly_deps(conn, dry_run=False, now=now)
+        # Conexão separada para o checkpoint: o PostgresSaver quer autocommit e
+        # linhas como dicionário. prepare_threshold=0 por causa do pooler.
+        with psycopg.connect(
+            _database_url(), autocommit=True, prepare_threshold=0, row_factory=dict_row
+        ) as checkpoint_conn:
+            saver = PostgresSaver(checkpoint_conn)
+            saver.setup()
+            secure_checkpoint_tables(checkpoint_conn)
+            if args.weekly_command == "start":
+                reports = start_week(deps, saver, now=now)
+            else:
+                reports = [resume_week(deps, saver, now=now, force=args.force)]
+        conn.commit()
+    _print_weekly(reports)
+
+
 _SUMMARY_HELP = "só números, sem texto de post (para log público do GitHub Actions)"
 
 
@@ -541,6 +746,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     backtest.add_argument("--limit", type=int, default=None, help="mede só N posts")
     backtest.set_defaults(handler=_cmd_backtest)
+
+    weekly = commands.add_parser("weekly", help="agente semanal (LangGraph)")
+    weekly_commands = weekly.add_subparsers(dest="weekly_command", required=True)
+    start = weekly_commands.add_parser(
+        "start", help="começa a semana: auditoria e pausa (domingo, weekly.yml)"
+    )
+    resume = weekly_commands.add_parser(
+        "resume", help="retoma a semana pausada, se for a hora (a cada 2h, replies.yml)"
+    )
+    resume.add_argument(
+        "--force", action="store_true", help="retoma sem esperar a auditoria nem o prazo"
+    )
+    for command in (start, resume):
+        command.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="semana inteira simulada: LLM roteirizado, nada gravado nem enviado",
+        )
+        command.add_argument("--summary", action="store_true", help=_SUMMARY_HELP)
+        command.set_defaults(handler=_cmd_weekly)
     return parser
 
 

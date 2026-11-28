@@ -1,6 +1,7 @@
 name: Respostas do Telegram
 
-# Lê meus ✓/✗ e grava no banco (docs/arquitetura.md seção 8).
+# Lê meus ✓/✗ e grava no banco (docs/arquitetura.md seção 8). Depois, retoma o
+# agente semanal se a semana está pausada e já é a hora (seção 6).
 # O Telegram guarda as atualizações por até 24h; a cada 2h sobra folga mesmo
 # com o atraso do cron do Actions.
 on:
@@ -47,3 +48,38 @@ jobs:
 
       - name: Ingere as respostas
         run: uv run prospector ingest-replies --summary
+
+  # Retoma o agente semanal se a auditoria foi respondida ou o prazo venceu
+  # (docs/arquitetura.md seção 6). Quase sempre não há semana pausada, e o
+  # comando sai em segundos sem chamar LLM nenhum.
+  semanal:
+    needs: respostas
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Mesmo grupo do weekly.yml: nunca começar e retomar ao mesmo tempo.
+    concurrency:
+      group: weekly
+      cancel-in-progress: false
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Instala o uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Instala as dependências
+        run: uv sync --no-dev
+
+      - name: Retoma a semana, se for a hora
+        run: uv run prospector weekly resume --summary
