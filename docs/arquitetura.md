@@ -368,6 +368,7 @@ src/prospector/
 
 Cron do Actions é em UTC (BRT + 3h) e pode atrasar alguns minutos.
 
+- **Chave liga/desliga.** Os agendamentos só rodam quando a variável do repositório `PROSPECTOR_ENABLED` vale `true` (`gh variable set PROSPECTOR_ENABLED --body true`; para desligar, `--body false`). Com a chave desligada, o job agendado é pulado, e não falha. O botão "Run workflow" funciona sempre, para testar antes de ligar. Por quê: o sistema fica pronto no `main` sem gastar Apify nem LLM até eu decidir ligar, e sem um e-mail de falha a cada 2h enquanto os secrets não estão cadastrados.
 - **Secrets** usados pelos workflows: `DATABASE_URL` (pooler), `APIFY_TOKEN`, `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`.
 - Cada workflow aplica as migrações pendentes antes de rodar (`prospector db migrate` não faz nada quando o banco está em dia).
 - `concurrency` impede duas coletas ao mesmo tempo, que leriam o mesmo gasto do mês e poderiam passar juntas do teto.

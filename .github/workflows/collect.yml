@@ -17,6 +17,10 @@ permissions:
 
 jobs:
   coleta:
+    # Chave liga/desliga: o agendamento só roda depois de `gh variable set
+    # PROSPECTOR_ENABLED --body true` (docs/arquitetura.md seção 10). O botão
+    # "Run workflow" funciona sempre, para testar com a chave desligada.
+    if: github.event_name == 'workflow_dispatch' || vars.PROSPECTOR_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
