@@ -71,6 +71,38 @@ uv run prospector weekly resume --force                       # retoma sem esper
 
 Os testes de Postgres pulam sem `TEST_DATABASE_URL`. Para rodá-los, aponte essa variável para um Postgres qualquer: cada teste cria um schema temporário e o apaga no fim.
 
+## Como ligar
+
+O código está todo pronto (etapas 0 a 7). Os agendamentos ficam desligados por uma chave e só rodam quando você ligar. Faça na ordem, de dentro da pasta do projeto:
+
+1. **Bot do Telegram.** Crie com o [@BotFather](https://t.me/BotFather) (`/newbot`), ponha o token em `TELEGRAM_BOT_TOKEN` no `.env`, mande um "oi" para o bot e rode `uv run prospector telegram chats`. O número vai em `TELEGRAM_CHAT_ID`. Confira com `uv run prospector telegram ping`.
+2. **Modelo do agente.** No `.env`, use `AGENT_MODEL=claude-opus-5-5`, mais novo e mais barato que o `claude-opus-5`.
+3. **Banco em dia.** `uv run prospector db migrate` cria as tabelas novas (agente semanal) no Supabase.
+4. **Ensaio local, sem gastar nada:**
+   ```bash
+   uv run prospector collect --dry-run
+   uv run prospector weekly start --dry-run
+   uv run prospector storage check
+   ```
+5. **Secrets do GitHub.** O `.env` não sobe para o GitHub, então os workflows leem os Secrets:
+   ```bash
+   gh secret set -f .env       # sobe tudo do .env
+   gh secret set DATABASE_URL  # sobrescreve com a URL do POOLER (Supabase → Connect → Session pooler)
+   ```
+   O Actions não tem IPv6; a conexão direta do Supabase não funciona lá (`docs/arquitetura.md` seção 10).
+6. **Primeira coleta na mão:** `gh workflow run collect.yml`. Acompanhe com `gh run watch` e veja se o post chega no celular.
+7. **Ligar:**
+   ```bash
+   gh variable set PROSPECTOR_ENABLED --body true
+   ```
+   A partir daí: coleta todo dia às 7h, respostas a cada 2h, agente semanal no domingo às 10h (horário de Brasília).
+
+**Desligar:** `gh variable set PROSPECTOR_ENABLED --body false`. Nada se perde; ao religar, tudo continua de onde parou.
+
+**Se parar sozinho:** o GitHub desliga os agendamentos de um repositório público depois de 60 dias sem commit. Reative em Actions → (workflow) → Enable.
+
+**Custo esperado por mês:** Apify dentro do crédito grátis (teto de 900 posts em código), juiz Haiku com centavos, agente semanal na ordem de US$ 2 a 4.
+
 ## Privacidade
 
 Os posts coletados contêm nomes e contatos de pessoas reais. **Nenhum dado é versionado neste repositório.** Tudo fica no banco externo; chaves ficam nos Secrets do GitHub.

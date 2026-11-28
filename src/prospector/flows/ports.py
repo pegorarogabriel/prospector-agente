@@ -259,8 +259,8 @@ class Messenger(Protocol):
 
     def send_post(self, message: PostMessage) -> SentMessage: ...
 
-    def send_text(self, text: str) -> SentMessage:
-        """Uma mensagem simples, sem botões (resumo da semana, lembretes)."""
+    def send_summary(self, text: str, *, undo: bool) -> SentMessage:
+        """O resumo da semana. Com `undo`, leva o botão "Desfazer ajustes"."""
         ...
 
     def fetch_replies(self, offset: int | None) -> ReplyBatch:

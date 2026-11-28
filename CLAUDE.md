@@ -14,7 +14,7 @@ Gabriel está aprendendo Git, arquitetura limpa, LangChain e LangGraph com este 
 - Type hints em tudo. Código e nomes em inglês; docs e mensagens ao usuário em português.
 - `src/prospector/core/` não importa nada externo (nem LangChain, nem SQLAlchemy, nem requests).
 - `agent/tools.py` chama `flows/`, nunca `integrations/` diretamente.
-- Toda chamada externa (Apify, Telegram, LLM, banco) passa por uma porta em `flows/ports.py` e tem implementação fake para testes.
+- Toda chamada externa (Apify, Telegram, LLM, banco) passa por uma porta em `flows/ports.py` e tem implementação fake para testes. Exceção: o LLM do agente semanal usa como porta a própria interface `BaseChatModel` do LangChain (real: `ChatAnthropic`, montado no `cli.py`; fake: `ScriptedChatModel`). Ver `docs/arquitetura.md` seção 9.
 
 ## Git
 
@@ -25,6 +25,12 @@ Gabriel está aprendendo Git, arquitetura limpa, LangChain e LangGraph com este 
 
 - Nunca rode o Apify real em testes. Use o fake.
 - O teto `MONTHLY_RESULT_BUDGET` é verificado em código antes de toda chamada ao Apify.
+
+## Estado atual
+
+Etapas 0 a 7 com código pronto e testado. O sistema está **desligado** pela chave `PROSPECTOR_ENABLED` e espera ser ligado: o passo a passo está no README, seção "Como ligar". Os critérios "pronto quando" das etapas 5 a 7 só podem ser confirmados em produção, depois de ligar.
+
+Os testes de Postgres pulam sem `TEST_DATABASE_URL`. Para rodá-los na máquina, sem Docker, dá para subir um Postgres descartável com `uv run --with pgserver` (fora do repositório).
 
 ## Roadmap
 

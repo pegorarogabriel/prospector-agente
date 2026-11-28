@@ -699,4 +699,10 @@ def build_summary(
     if rejected:
         lines += ["", "Propostas barradas pelos guardrails:"]
         lines += [f"- {item}" for item in rejected]
+    if changes:
+        lines += [
+            "",
+            "Não gostou? O botão abaixo desfaz as regras e buscas desta semana. "
+            "O placar não muda: ele é conta, não ajuste.",
+        ]
     return "\n".join(lines)

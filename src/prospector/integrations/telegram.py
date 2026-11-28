@@ -24,6 +24,7 @@ from prospector.core.notification import (
     DONE_CHOICE,
     OTHER_CHOICE,
     RIGHT_CHOICE,
+    UNDO_CHOICE,
     Reply,
     reject_choice,
 )
@@ -182,6 +183,16 @@ class TelegramMessenger:
 
     def send_post(self, message: PostMessage) -> SentMessage:
         result = self._call("sendMessage", {"chat_id": self.chat_id, **render_post(message)})
+        return SentMessage(chat_id=result["chat"]["id"], message_id=result["message_id"])
+
+    def send_summary(self, text: str, *, undo: bool) -> SentMessage:
+        """O resumo da semana, em texto puro. Com `undo`, um botão para desfazer os ajustes."""
+        payload: dict[str, Any] = {"chat_id": self.chat_id, "text": text}
+        if undo:
+            payload["reply_markup"] = {
+                "inline_keyboard": [[_button("↩ Desfazer ajustes da semana", UNDO_CHOICE)]]
+            }
+        result = self._call("sendMessage", payload)
         return SentMessage(chat_id=result["chat"]["id"], message_id=result["message_id"])
 
     def send_text(self, text: str) -> SentMessage:

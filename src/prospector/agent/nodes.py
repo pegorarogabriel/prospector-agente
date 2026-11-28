@@ -367,20 +367,21 @@ def make_nodes(deps: WeeklyDeps) -> dict[str, Node]:
         now, start = _now_and_start(deps, state)
         week_id = state["week_id"]
         score = ScoreReport(**state.get("score", {}))
+        changes = repo.list_changes(week_id)
         text = build_summary(
             week_id=week_id,
             numbers=week_numbers(repo, start=start, end=now),
             frozen=not state.get("had_feedback", False),
             silent_weeks=state.get("silent_weeks", 0),
             score=score,
-            changes=repo.list_changes(week_id),
+            changes=changes,
             rejected=state.get("rejected", []),
             analysis=state.get("analysis", ""),
             agent_error=state.get("agent_error"),
         )
         run = repo.get_weekly_run(week_id)
         try:
-            sent = deps.messenger.send_text(text)
+            sent = deps.messenger.send_summary(text, undo=bool(changes))
         except Exception:
             sent = None
         if run is not None:

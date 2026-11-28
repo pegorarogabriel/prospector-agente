@@ -302,6 +302,9 @@ def _print_ingest(report: "IngestReport", *, write: bool, summary: bool) -> None
     print(f"  'Outro' esperando o motivo: {report.waiting_reason}")
     print(f"Respostas novas: {len(report.feedback)}", end="")
     print(f" (gravadas: {report.recorded})" if write else " (dry-run: nada gravado)")
+    for week in report.undone_weeks:
+        action = "desfeitos" if write else "seriam desfeitos (dry-run)"
+        print(f"Ajustes da semana {week}: {action}")
     if not summary:
         for answer in report.feedback:
             mark = "✓" if answer.verdict.value == "right" else "✗"
