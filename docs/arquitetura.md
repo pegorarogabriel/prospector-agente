@@ -115,11 +115,11 @@ O sistema precisa continuar funcionando quando eu não respondo. A regra é: **s
 
 A regra se encaixa no que já existe, sem mudar as funções do bandit:
 
-- **Congelar = pular `atualizar_placares`.** Esse é o único nó que mexe em placar, decay e aposentadoria (seção 6). Em `agent/graph.py`, depois de `aguardar_respostas`, uma aresta condicional vai direto para `enviar_resumo` quando a semana não tem feedback. `decay_all`, `should_retire` e `retire` continuam do jeito que estão.
-- **A decisão vive no `core`, com testes.** `core/feedback.py` ganha funções puras que recebem a lista de `Feedback` e dizem se a semana teve resposta e quantas semanas seguidas ficaram sem resposta. O grafo só consulta essas funções.
-- **Os descartes da semana congelada não contam depois.** `atualizar_placares` processa só os posts da semana corrente, então a semana pulada não é cobrada na volta.
-- **Corte no orçamento:** `core/budget.py`, em `daily_budget`, recebe as semanas seguidas sem feedback e reduz o teto pela metade a partir de 4.
-- **Sem tabela nova.** Se a semana teve feedback é derivado das datas dos registros de feedback no banco (etapa 2). O contador de semanas seguidas sai da mesma consulta.
+- **Congelar = pular `atualizar_placares`.** Esse é o único nó que mexe em placar, decay e aposentadoria (seção 6). Em `agent/graph.py`, depois de `aguardar_respostas`, uma aresta condicional vai para `congelar_semana` e depois `enviar_resumo` quando a semana não tem feedback. Nenhum LLM é chamado.
+- **A decisão vive no `core`, com testes.** `core/feedback.py` tem `week_had_feedback` (a semana teve resposta?) e `silent_weeks` (quantas semanas seguidas sem resposta). O grafo e a coleta só consultam essas funções.
+- **O silêncio conta a partir da primeira pergunta.** `silent_weeks` mede desde o mais recente entre a minha última resposta e a primeira mensagem que o sistema me mandou. Sem isso, o histórico importado (respostas de setembro e outubro) faria o sistema começar achando que eu sumi há meses e cortaria o orçamento no primeiro dia.
+- **Os descartes da semana congelada não contam depois.** Cada post entra no placar uma vez só, registrado em `scored_posts`. `congelar_semana` marca os posts da semana como `frozen`, e eles saem da fila sem contar. O aprovado ainda no prazo de 7 dias continua na fila: uma resposta atrasada ainda vale.
+- **Corte no orçamento:** `daily_budget` (`core/budget.py`) recebe as semanas sem resposta e corta o teto pela metade a partir de 4. A coleta calcula isso a cada dia; a primeira resposta desfaz o corte sozinha.
 
 ## 5. Triagem (limpar o lixo)
 
@@ -182,50 +182,93 @@ Os aprovados do dia são ordenados por `score` e enviados ao Telegram. Teto: `MA
 
 ```
 preparar_semana
-   │  separa 2 descartados aleatórios pra auditoria
+   │  sorteia 2 descartados da semana pra auditoria
    ▼
 enviar_auditoria  ──►  Telegram: "Descartei. Confirma?"
    │
    ▼
-⏸ aguardar_respostas   (interrupt; retomado pela rotina de respostas
-   │                     ou automaticamente na segunda às 8h)
+⏸ aguardar_respostas   (interrupt; retomado pela rotina de respostas quando
+   │                     eu respondo, ou sozinho depois de segunda 8h)
    │
-   ├── semana sem feedback? ──►  enviar_resumo  ("nada mudou", seção 4)
+   ├── semana sem feedback? ──► congelar_semana ──► enviar_resumo ("nada mudou", seção 4)
    ▼
-atualizar_placares     (código puro: alpha/beta, decay, aposentadoria)
+atualizar_placares     (código puro: decay, posts novos no placar, aposentadoria, promoção)
    │
    ▼
 analisar_motivos       (LLM: agrupa meus motivos de ✗ e os erros da auditoria em padrões)
    │
    ▼
-propor_ajustes         (LLM com ferramentas)
-   │   tools: consultar_historico, listar_receitas, testar_regra, testar_receita
+propor_ajustes         (LLM com ferramentas, num laço próprio)
+   │   tools: consultar_historico, listar_receitas, testar_regra, testar_receita,
+   │          registrar_propostas
    ▼
 validar_ajustes        (código: guardrails abaixo)
    │
    ▼
-aplicar_ajustes  ──►  enviar_resumo  ──►  Telegram: resumo + botão [Desfazer ajustes]
+aplicar_ajustes  ──►  enviar_resumo  ──►  Telegram: resumo da semana
 ```
+
+### Como roda no GitHub Actions (sem servidor)
+
+- **Domingo 10h** (`weekly.yml`): `prospector weekly start` registra a semana em `weekly_runs`, roda o grafo até `aguardar_respostas` e para. O `interrupt()` grava o estado no Postgres (`PostgresSaver`) e o processo termina.
+- **A cada 2h** (`replies.yml`, job `semanal`, depois de ler as respostas): `prospector weekly resume` olha se há semana pausada. Se respondi os 2 posts da auditoria, ou se passou o prazo (`resume_after`, domingo 10h + 22h = segunda 8h), retoma com `Command(resume=...)`. Quase sempre não há nada pausado, e o comando sai em segundos sem chamar LLM.
+- Sem descartes na semana, não há auditoria nem pausa: o grafo vai até o fim no domingo.
+- Se um domingo chega com a semana anterior ainda pausada (o Actions ficou fora do ar, por exemplo), `start` termina a anterior antes de começar a nova.
+- O `thread_id` do checkpoint é `weekly-<semana>`. A semana é a data da execução (`2026-11-29`).
+- **Commit antes do checkpoint.** Cada nó que grava no banco confirma a transação no fim (`deps.commit()`). Se o processo cair entre o commit e o checkpoint, o nó roda de novo na retomada. Por isso `enviar_auditoria` não reenvia o que já foi enviado e o placar não conta um post duas vezes (`scored_posts`).
+- As tabelas do `PostgresSaver` (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) são criadas pelo `setup()` dele, e o comando liga o RLS nelas logo depois (seção 10). O estado do grafo (`agent/state.py`) guarda só ids, contagens e conclusões do LLM, nunca texto de post.
+
+### O placar da semana (`atualizar_placares`)
+
+Código puro (`core/scoring.py` + `flows/weekly.py`), nesta ordem:
+
+1. **Esquecimento** (`DECAY`) em todas as receitas;
+2. **posts novos no placar**, com peso cheio. Cada post entra uma vez só, na semana em que o resultado dele fica definido. O aprovado espera os 7 dias de prazo pela minha resposta; até lá, fica na fila. Um descarte conta na hora, a não ser que tenha caído na auditoria;
+3. **aposentadoria** das ativas que perderam de forma convincente para a líder;
+4. **promoção** de no máximo 1 candidata, se abriu vaga.
+
+Esquecer antes de somar faz a evidência nova entrar inteira. `scored_posts` registra o que já contou. A migração que criou a tabela marcou todos os posts que já existiam (o histórico importado) como `before_agent`: eles já estão no prior das receitas, e contar de novo seria contar duas vezes.
+
+### Auditoria
+
+- 2 descartados por semana, sorteados entre os da semana que ainda não foram auditados. **Os que o juiz viu têm preferência** (nota acima de zero): um descarte das regras fixas é quase sempre lixo claro (post velho, carreta), e o que ensina é o descarte do juiz, porque são as regras dele que o agente ajusta.
+- Botões: `✓ Descarte certo`, `✗ Era bom, eu chamaria` e `✗ Outro (responda com o motivo)`. A resposta segue as regras da seção 8, com `source = audit`.
+- Se a imagem tem cópia guardada, a prévia do link usa um link temporário dela: a URL do Facebook já pode ter expirado.
 
 ### Ferramentas do agente
 
 | Ferramenta | O que faz |
 |---|---|
-| `consultar_historico` | Busca posts rotulados por filtro (período, receita, motivo) |
+| `consultar_historico` | Busca posts que eu julguei, com filtros (dias, receita, trecho de texto, bom/ruim) |
 | `listar_receitas` | Receitas com placar, taxa estimada e status |
-| `testar_regra` | Roda uma regra de triagem proposta contra o histórico rotulado e devolve quantos acertos/erros ela teria causado (**backtest**) |
-| `testar_receita` | Busca de teste no Apify com 5 resultados, para ver se o termo traz algo (gasta orçamento; máx. 2 por semana) |
+| `testar_regra` | Roda o juiz com as regras alteradas contra os posts rotulados e compara com as regras atuais (**backtest**, até 30 posts). Máx. 6 por semana |
+| `testar_receita` | Busca de teste no Apify com 5 resultados, mostra quantos passam nas regras fixas. Gasta orçamento real (passa pela trava do mês e grava em `search_runs` sem receita); máx. 2 por semana |
+| `registrar_propostas` | Entrega as propostas finais e encerra o laço |
+
+As ferramentas (`agent/tools.py`) chamam `flows/weekly.py`, nunca as integrações. Os limites de uso são contados em código, e o LLM é avisado na resposta da ferramenta quando passa deles.
+
+`propor_ajustes` roda seu laço (LLM → ferramentas → LLM) num grafo pequeno e separado, sem checkpoint: as mensagens, que trazem trechos de posts, vivem só durante o laço. Para o grafo da semana, ele é um nó comum que devolve as propostas. O laço tem teto de 40 passos; passou disso, a semana segue sem ajuste e o resumo diz por quê.
 
 ### Guardrails (código, não LLM)
 
-O LLM **propõe**; o código **decide** se aplica:
+O LLM **propõe**; o código **decide** se aplica (`validar_ajustes`, regras em `core/weekly.py`):
 
-- Regra de triagem nova só entra se o backtest não piorar a taxa de acerto nem descartar mais de 1 post que eu marquei como bom.
-- No máximo 1 receita nova e 3 mudanças de regra por semana.
-- O LLM não mexe em placar, orçamento nem em receitas fora do ciclo de vida.
-- Tudo que é aplicado vai pro `changelog` com o motivo; o botão **Desfazer ajustes** reverte a semana inteira.
+- Os únicos ajustes possíveis: regra nova, desligar regra, trocar o texto de uma regra (desliga a antiga e cria a nova; regras são versionadas, nunca editadas) e termo de busca novo, que entra como **candidata**.
+- Regra de triagem só entra se o backtest não piorar a taxa de acerto nem fizer o juiz deixar de aprovar mais de 1 post que eu marquei como bom. O `validar_ajustes` mede de novo (reaproveitando a medição da ferramenta quando é o mesmo conjunto de regras): o número que vale é o do código, não o que o LLM disse.
+- As mudanças de regra são testadas em sequência: cada uma contra as regras já com as anteriores aceitas.
+- No máximo 1 receita nova e 3 mudanças de regra por semana. Termo repetido é barrado.
+- O LLM não mexe em placar, orçamento nem status de receita: o formato da proposta não tem como pedir isso.
+- Tudo que é aplicado vai pro `changelog` com o motivo. O que foi barrado aparece no resumo, com o porquê.
 
 **Por que ajustes automáticos:** eu não aprovo antes; avalio o efeito na semana seguinte. O botão de desfazer é a rede de segurança.
+
+### O LLM do agente
+
+- **LangChain + LangGraph** só aqui (seção 9). O modelo é o `ChatAnthropic`, montado no `cli.py`: `claude-opus-5-5` (`AGENT_MODEL`), esforço `high`, e fallback de recusa do lado do servidor ligado (`fallbacks: "default"`): se o Claude recusar, outro modelo continua na mesma chamada.
+- **A porta do LLM é a interface `BaseChatModel` do LangChain.** Os nós recebem um `BaseChatModel` pronto; o fake dos testes é um modelo roteirizado (`ScriptedChatModel`, em `integrations/fakes.py`), que devolve respostas e chamadas de ferramenta pré-definidas. Assim `agent/` não importa `langchain_anthropic`, e o grafo inteiro roda nos testes sem rede.
+- As duas etapas de LLM entregam o resultado chamando uma ferramenta (`registrar_padroes`, `registrar_propostas`), com escolha de ferramenta automática: o Opus 5.5 não aceita forçar uma ferramenta. Se ele responder em texto em vez de chamar, o texto vira o padrão da semana e o laço segue.
+- Se não há motivo meu nem erro de auditoria na semana, o LLM nem é chamado. Erro de API vira "o agente não conseguiu propor ajustes" no resumo; o placar já foi atualizado e nada mais muda.
+- **Custo estimado:** uma semana com ajustes faz algo como 5 a 15 chamadas ao Opus (US$ 4 / US$ 20 por milhão de tokens) e até umas 360 chamadas do juiz no Haiku nos testes de regra (6 testes × 30 posts × 2 conjuntos de regras, com cache do prompt). Fica na ordem de US$ 0,50 a 1 por semana.
 
 ## 7. Orçamento
 
@@ -300,8 +343,10 @@ src/prospector/
 ├── core/            regras de negócio puras, SEM dependências externas
 │   ├── post.py          Post (texto e/ou imagem), TriageResult
 │   ├── recipe.py        Recipe (termo, params, alpha, beta, status)
-│   ├── feedback.py      Feedback (post, veredito, motivo, origem)
+│   ├── feedback.py      Feedback (post, veredito, motivo, origem), semana sem resposta
 │   ├── bandit.py        Thompson Sampling, decay, aposentadoria
+│   ├── scoring.py       o placar da semana: o que cada post valeu para as receitas
+│   ├── weekly.py        semana do agente: auditoria, pausa, ajustes e guardrails
 │   ├── budget.py        cálculo do orçamento diário
 │   ├── rules.py         regras determinísticas da triagem
 │   ├── triage.py        regras do juiz, exemplos few-shot e a escolha deles
@@ -314,20 +359,24 @@ src/prospector/
 │   ├── backtest.py      mede regras e juiz contra as minhas respostas
 │   ├── notify.py        manda os aprovados pro Telegram e grava cada mensagem
 │   ├── ingest_replies.py lê meus ✓/✗, grava as respostas e o offset
+│   ├── weekly.py        passos do agente semanal que não são LLM (auditoria, placar,
+│   │                    backtest de regra, busca de teste, ajustes, resumo)
 │   └── import_legacy.py
-├── agent/           o agente semanal
-│   ├── graph.py
-│   ├── state.py
-│   ├── nodes.py
-│   └── tools.py         tools chamam os flows, nunca as integrações direto
+├── agent/           o agente semanal (LangGraph + LangChain)
+│   ├── graph.py         o grafo: nós e arestas
+│   ├── state.py         o estado que o checkpoint grava
+│   ├── nodes.py         os nós, os prompts e o laço de ferramentas
+│   ├── tools.py         tools chamam os flows, nunca as integrações direto
+│   ├── deps.py          as portas que o cli.py entrega ao grafo
+│   └── runner.py        começar e retomar a semana
 └── integrations/    implementações concretas das portas
     ├── apify.py         SearchProvider sobre o actor do Apify
-    ├── fakes.py         busca, juiz e Telegram falsos (dry-run e testes)
+    ├── fakes.py         busca, juiz, Telegram e LLM do agente falsos (dry-run e testes)
     ├── samples/         posts de exemplo, inventados, no formato do Apify
     ├── telegram.py      Messenger sobre a Bot API (sendMessage, getUpdates)
     ├── supabase_storage.py ImageStore: cópia das imagens no bucket privado
     ├── postgres.py      Repository sobre Postgres + migrador
-    ├── sql/             migrações numeradas (001_initial, 002_search_runs, 003_triage_rules, 005_notifications, ...)
+    ├── sql/             migrações numeradas (001_initial, 002_search_runs, ..., 007_weekly_agent)
     ├── memory.py        Repository em memória: fake dos testes e do --dry-run
     ├── legacy_sqlite.py LegacySource sobre o prospector.db antigo
     └── llm.py           juiz: Claude via SDK oficial da Anthropic (saída estruturada)
@@ -339,7 +388,9 @@ src/prospector/
 
 **Fakes honestos:** toda porta tem uma implementação fake. A do `Repository` passa pelos mesmos testes que a do Postgres (`tests/test_repository_contract.py`), para o fake não se comportar diferente do banco real.
 
-**Modelos:** `claude-haiku-5-5` para o juiz diário (pequeno e barato, `effort: low`); um modelo maior para o agente semanal. LangChain/LangGraph entram só no agente semanal (etapa 6), onde há grafo, ferramentas e pausa; o juiz usa o SDK oficial direto.
+**Modelos:** `claude-haiku-5-5` para o juiz diário (pequeno e barato, `effort: low`); `claude-opus-5-5` para o agente semanal (seção 6). LangChain/LangGraph entram só no agente semanal, onde há grafo, ferramentas e pausa; o juiz usa o SDK oficial direto.
+
+**A porta do LLM no agente** é a interface `BaseChatModel` do LangChain, e não um `Protocol` em `ports.py`: ela já é uma interface, com uma implementação real (`ChatAnthropic`, montada no `cli.py`) e uma fake (`ScriptedChatModel`). Recriar a mesma coisa em `ports.py` só duplicaria o LangChain. `agent/` continua sem importar `integrations/` nem `langchain_anthropic`.
 
 ## 10. Infraestrutura
 
@@ -362,8 +413,8 @@ src/prospector/
 | Arquivo | Quando (BRT) | Faz |
 |---|---|---|
 | `collect.yml` | Todo dia, 7h | Coleta, triagem e envio dos aprovados |
-| `replies.yml` | A cada 2h | Ingere respostas (etapa 6: retoma o grafo semanal se a auditoria foi respondida) |
-| `weekly.yml` | Domingo, 10h | Inicia o agente semanal |
+| `replies.yml` | A cada 2h | Ingere respostas; depois, o job `semanal` retoma o grafo semanal se for a hora |
+| `weekly.yml` | Domingo, 10h | Começa o agente semanal (auditoria e pausa) |
 | `ci.yml` | Todo PR | Lint + testes |
 
 Cron do Actions é em UTC (BRT + 3h) e pode atrasar alguns minutos.
@@ -371,7 +422,8 @@ Cron do Actions é em UTC (BRT + 3h) e pode atrasar alguns minutos.
 - **Chave liga/desliga.** Os agendamentos só rodam quando a variável do repositório `PROSPECTOR_ENABLED` vale `true` (`gh variable set PROSPECTOR_ENABLED --body true`; para desligar, `--body false`). Com a chave desligada, o job agendado é pulado, e não falha. O botão "Run workflow" funciona sempre, para testar antes de ligar. Por quê: o sistema fica pronto no `main` sem gastar Apify nem LLM até eu decidir ligar, e sem um e-mail de falha a cada 2h enquanto os secrets não estão cadastrados.
 - **Secrets** usados pelos workflows: `DATABASE_URL` (pooler), `APIFY_TOKEN`, `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`.
 - Cada workflow aplica as migrações pendentes antes de rodar (`prospector db migrate` não faz nada quando o banco está em dia).
-- `concurrency` impede duas coletas ao mesmo tempo, que leriam o mesmo gasto do mês e poderiam passar juntas do teto.
+- `concurrency` impede duas coletas ao mesmo tempo, que leriam o mesmo gasto do mês e poderiam passar juntas do teto. O `weekly.yml` e o job `semanal` do `replies.yml` dividem o grupo `weekly`: começar e retomar a mesma semana ao mesmo tempo mandaria a auditoria duas vezes.
+- **Checkpoints do LangGraph:** `prospector weekly` abre uma segunda conexão (autocommit, linhas como dicionário, `prepare_threshold=0` por causa do pooler) para o `PostgresSaver`, roda o `setup()` dele, que cria as tabelas de checkpoint na primeira vez, e liga o RLS nelas.
 - O GitHub desliga os agendamentos de um repositório público depois de 60 dias sem commit. Se a coleta parar sozinha, é isso: reative em Actions.
 
 ## 11. Histórico do FacebookProspector
